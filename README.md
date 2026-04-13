@@ -1,6 +1,6 @@
 # eiroute
 
-A minimal, production-grade HTTP reverse proxy for self-hosted OpenAI-compatible LLM backends (sglang, vLLM).
+A minimal but fast HTTP reverse proxy for self-hosted OpenAI-compatible LLM backends (sglang, vLLM).
 
 ## Build
 
