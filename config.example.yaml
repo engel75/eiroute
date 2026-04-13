@@ -1,0 +1,28 @@
+# eiroute configuration
+listen: ":8080"
+request_timeout: "10m"       # total request timeout, generous for long streams
+idle_conn_timeout: "90s"     # idle connection timeout for upstream transport
+semaphore_timeout: "2s"      # how long to wait for a backend semaphore slot
+error_templates: "./config/errors.json"
+
+# Global override for the `owned_by` field in /v1/models responses.
+# If set, every model reported by /v1/models shows this as its owner,
+# regardless of what the upstream backend says. If empty, fall back to
+# per-backend `owned_by`, then to whatever the upstream reports.
+owned_by_override: "everyware"
+
+backends:
+  - name: "minimax-m27"
+    url: "http://sglang-minimax:8000"
+    max_concurrent: 32
+    health_path: "/health"
+    models: ["MiniMaxAI/MiniMax-M2.7"]
+    # Optional per-backend owned_by, used only if owned_by_override is empty.
+    owned_by: "everyware"
+  - name: "qwen-coder"
+    url: "http://vllm-qwen:8000"
+    max_concurrent: 16
+    health_path: "/health"
+    models: ["Qwen/Qwen2.5-Coder-32B-Instruct"]
+    owned_by: "everyware"
+    static: false  # if true, models remain in /v1/models even when backend is unhealthy

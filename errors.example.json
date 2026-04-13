@@ -1,0 +1,43 @@
+{
+  "backend_unavailable": {
+    "message": "The model '{model}' is temporarily unavailable (backend '{backend}' is not responding). Please retry in a minute. If this persists, contact ops@example.com with request ID {request_id}.",
+    "type": "backend_unavailable",
+    "code": "upstream_down",
+    "http_status": 503
+  },
+  "unknown_model": {
+    "message": "Model '{model}' is not available on this gateway. Available models: {available_models}. Request ID: {request_id}.",
+    "type": "invalid_request_error",
+    "code": "model_not_found",
+    "http_status": 404
+  },
+  "backend_overloaded": {
+    "message": "The model '{model}' is currently at capacity. Please retry shortly. Request ID: {request_id}.",
+    "type": "rate_limit_error",
+    "code": "backend_overloaded",
+    "http_status": 429
+  },
+  "backend_bad_request": {
+    "message": "The backend rejected the request: {upstream_message}. Request ID: {request_id}.",
+    "type": "invalid_request_error",
+    "code": "upstream_bad_request",
+    "http_status": 400
+  },
+  "backend_internal_error": {
+    "message": "The backend encountered an internal error. This has been logged. Request ID: {request_id}.",
+    "type": "api_error",
+    "code": "upstream_internal_error",
+    "http_status": 502
+  },
+  "stream_interrupted": {
+    "message": "The stream was interrupted due to a backend error. Partial output was delivered. Request ID: {request_id}.",
+    "type": "api_error",
+    "code": "stream_interrupted"
+  },
+  "router_internal_error": {
+    "message": "The router encountered an internal error. Request ID: {request_id}.",
+    "type": "api_error",
+    "code": "router_internal_error",
+    "http_status": 500
+  }
+}

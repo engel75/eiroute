@@ -1,0 +1,45 @@
+# Binaries
+/eiroute
+/eiroute.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+
+# Docker
+.dockerignore
+
+# Config (may contain secrets)
+config/config.yaml
+config/errors.json
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/

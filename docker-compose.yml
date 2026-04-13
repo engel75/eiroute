@@ -1,0 +1,10 @@
+services:
+  eiroute:
+    build: .
+    image: eiroute:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config/
+    command: ["-config", "/app/config/config.yaml"]
+    restart: unless-stopped
