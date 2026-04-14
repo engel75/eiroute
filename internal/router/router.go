@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -147,7 +148,13 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	tw := &trackingWriter{ResponseWriter: w}
+	tw := &trackingWriter{
+		ResponseWriter: w,
+		reqID:          reqID,
+		backend:        backend.Name,
+		model:          cr.Model,
+		logger:         rt.logger,
+	}
 	proxy.ServeHTTP(tw, r)
 
 	// Record metrics.
@@ -169,15 +176,30 @@ func (rt *Router) makeErrorHandler(backend *backends.Backend, reqID, model strin
 	return func(w http.ResponseWriter, r *http.Request, err error) {
 		tw, _ := w.(*trackingWriter)
 
-		// Passive health signal for transport errors.
-		backend.RecordFailure()
+		errType := classifyError(err)
+		isClientDisconnect := errType == "client_disconnect"
 
-		rt.logger.Error("proxy error",
-			"request_id", reqID,
-			"backend", backend.Name,
-			"model", model,
-			"error", err,
-		)
+		if !isClientDisconnect {
+			backend.RecordFailure()
+		}
+
+		if isClientDisconnect {
+			rt.logger.Warn("client disconnected",
+				"request_id", reqID,
+				"backend", backend.Name,
+				"model", model,
+				"error", err,
+				"wrote_body", tw != nil && tw.wroteBody,
+			)
+		} else {
+			rt.logger.Error("proxy error",
+				"request_id", reqID,
+				"backend", backend.Name,
+				"model", model,
+				"error", err,
+				"error_type", errType,
+			)
+		}
 
 		if tw != nil && tw.isStream && tw.wroteBody {
 			// Mid-stream failure: emit SSE error event.
@@ -259,6 +281,34 @@ func (rt *Router) resolveStatus(tw *trackingWriter, isStream bool) string {
 		return "stream_error"
 	}
 	return strconv.Itoa(tw.statusCode)
+}
+
+func classifyError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "client_disconnect"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context_deadline_exceeded"
+	}
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "i/o timeout"):
+		return "io_timeout"
+	case strings.Contains(errStr, "connection reset"):
+		return "connection_reset"
+	case strings.Contains(errStr, "connection refused"):
+		return "connection_refused"
+	case strings.Contains(errStr, "broken pipe"):
+		return "broken_pipe"
+	case strings.Contains(errStr, "EOF"):
+		return "eof"
+	case strings.Contains(errStr, "client disconnected"):
+		return "client_disconnect"
+	}
+	return "unknown"
 }
 
 // HandleHealth serves GET /health with backend health summary.

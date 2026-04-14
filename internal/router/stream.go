@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -11,10 +12,29 @@ import (
 // This is used by the ReverseProxy ErrorHandler to decide how to emit errors.
 type trackingWriter struct {
 	http.ResponseWriter
+	reqID   string
+	backend string
+	model   string
+	logger  *slog.Logger
+
 	wroteHeader bool
 	wroteBody   bool
 	isStream    bool
 	statusCode  int
+}
+
+// logWriteError logs client disconnect or write errors without flooding logs.
+func (t *trackingWriter) logWriteError(err error, bytes int) {
+	if err == nil {
+		return
+	}
+	t.logger.Warn("client write error",
+		"request_id", t.reqID,
+		"backend", t.backend,
+		"model", t.model,
+		"error", err,
+		"bytes_written", bytes,
+	)
 }
 
 func (t *trackingWriter) WriteHeader(code int) {
@@ -31,7 +51,9 @@ func (t *trackingWriter) Write(b []byte) (int, error) {
 		t.WriteHeader(http.StatusOK)
 	}
 	t.wroteBody = true
-	return t.ResponseWriter.Write(b)
+	n, err := t.ResponseWriter.Write(b)
+	t.logWriteError(err, n)
+	return n, err
 }
 
 func (t *trackingWriter) Flush() {
