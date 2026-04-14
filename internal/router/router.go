@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -263,18 +264,26 @@ func (rt *Router) resolveStatus(tw *trackingWriter, isStream bool) string {
 // HandleHealth serves GET /health with backend health summary.
 func (rt *Router) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	type backendHealth struct {
-		Healthy   bool   `json:"healthy"`
-		LastCheck string `json:"last_check"`
-		Error     string `json:"error,omitempty"`
+		Healthy        bool   `json:"healthy"`
+		ActiveRequests int32  `json:"active_requests"`
+		MaxConcurrent  int    `json:"max_concurrent"`
+		SemaphoreUsed  string `json:"semaphore_used"` // e.g. "12/32"
+		LastCheck      string `json:"last_check"`
+		Error          string `json:"error,omitempty"`
 	}
 
 	allHealthy := false
 	bs := make(map[string]backendHealth)
 	for _, b := range rt.pool.Backends() {
 		t, errStr := b.LastCheck()
+		active := b.ActiveRequestCount()
+		max := b.MaxConcurrent
 		bh := backendHealth{
-			Healthy:   b.IsHealthy(),
-			LastCheck: t.Format(time.RFC3339),
+			Healthy:        b.IsHealthy(),
+			ActiveRequests: active,
+			MaxConcurrent:  max,
+			SemaphoreUsed:  fmt.Sprintf("%d/%d", active, max),
+			LastCheck:      t.Format(time.RFC3339),
 		}
 		if errStr != "" {
 			bh.Error = errStr
