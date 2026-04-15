@@ -1,7 +1,7 @@
 BINARY := eiroute
 PKG := ./cmd/eiroute
-VERSION ?= dev
-LD_FLAGS := -X main.version=$(VERSION)
+APP_VERSION ?= dev
+LD_FLAGS := -X main.version=$(APP_VERSION)
 
 .PHONY: build test lint docker run clean
 
@@ -16,7 +16,7 @@ lint:
 	golangci-lint run
 
 docker:
-	docker build -t $(BINARY) --build-arg VERSION=$(VERSION) .
+	docker build -t $(BINARY) --build-arg APP_VERSION=$(APP_VERSION) .
 
 run: build
 	./$(BINARY) -config config.example.yaml

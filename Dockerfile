@@ -1,10 +1,10 @@
 FROM golang:1.26.2-alpine AS builder
-ARG VERSION=dev
+ARG APP_VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags "-X main.version=$(VERSION)" -o /app/eiroute ./cmd/eiroute
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=$(APP_VERSION)" -o /app/eiroute ./cmd/eiroute
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
