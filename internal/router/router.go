@@ -415,3 +415,13 @@ func (rt *Router) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(httpStatus)
 	json.NewEncoder(w).Encode(resp)
 }
+
+// ReloadErrors reloads the error templates from disk.
+func (rt *Router) ReloadErrors(path string) error {
+	templates, err := errtpl.LoadTemplates(path)
+	if err != nil {
+		return err
+	}
+	rt.errors = templates
+	return nil
+}

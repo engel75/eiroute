@@ -86,6 +86,10 @@ func main() {
 			http.Error(w, fmt.Sprintf("reload failed: %v", err), http.StatusInternalServerError)
 			return
 		}
+		if err := rt.ReloadErrors(newCfg.ErrorTemplates); err != nil {
+			http.Error(w, fmt.Sprintf("reload failed: %v", err), http.StatusInternalServerError)
+			return
+		}
 		if err := pool.ReloadPool(newCfg.Backends); err != nil {
 			http.Error(w, fmt.Sprintf("reload failed: %v", err), http.StatusInternalServerError)
 			return
@@ -111,6 +115,11 @@ func main() {
 		newCfg, err := config.Reload(*configPath)
 		if err != nil {
 			logger.Error("config reload failed", "error", err)
+			return
+		}
+		logger.Debug("reload: updating error templates", "path", newCfg.ErrorTemplates)
+		if err := rt.ReloadErrors(newCfg.ErrorTemplates); err != nil {
+			logger.Error("error template reload failed", "error", err)
 			return
 		}
 		logger.Debug("reload: updating backend pool", "backends", len(newCfg.Backends))
