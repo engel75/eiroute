@@ -83,7 +83,7 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	// Read and lightly parse body.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		rt.writeError(w, "router_internal_error", reqID, nil)
+		rt.writeError(w, "router_internal_error", reqID, nil, nil)
 		return
 	}
 
@@ -91,7 +91,7 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &cr); err != nil {
 		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
 			"upstream_message": "invalid JSON in request body",
-		})
+		}, nil)
 		return
 	}
 
@@ -103,11 +103,11 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 			rt.writeError(w, "unknown_model", reqID, map[string]string{
 				"model":            cr.Model,
 				"available_models": strings.Join(rt.pool.AllModels(), ", "),
-			})
+			}, nil)
 		default:
 			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
 				"model": cr.Model,
-			})
+			}, nil)
 		}
 		return
 	}
@@ -127,19 +127,19 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 			rt.writeError(w, "model_deprecated", reqID, map[string]string{
 				"model":     cr.Model,
 				"successor": backend.Successor,
-			})
+			}, backend)
 			return
 		} else if backend.Static {
 			rt.writeError(w, "model_deprecated", reqID, map[string]string{
 				"model":     cr.Model,
 				"successor": backend.Successor,
-			})
+			}, backend)
 			return
 		} else {
 			rt.writeError(w, "model_outdated", reqID, map[string]string{
 				"model":     cr.Model,
 				"successor": backend.Successor,
-			})
+			}, backend)
 			return
 		}
 	}
@@ -151,7 +151,7 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "5")
 		rt.writeError(w, "rate_limited", reqID, map[string]string{
 			"model": cr.Model,
-		})
+		}, backend)
 		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, cr.Model).Inc()
 		return
 	}
@@ -250,7 +250,7 @@ func (rt *Router) makeErrorHandler(backend *backends.Backend, reqID, model strin
 		rt.writeError(w, key, reqID, map[string]string{
 			"model":   model,
 			"backend": backend.Name,
-		})
+		}, backend)
 	}
 }
 
@@ -305,7 +305,7 @@ func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Bac
 	return nil
 }
 
-func (rt *Router) writeError(w http.ResponseWriter, key, reqID string, extra map[string]string) {
+func (rt *Router) writeError(w http.ResponseWriter, key, reqID string, extra map[string]string, backend *backends.Backend) {
 	replacements := map[string]string{
 		"request_id": reqID,
 		"timestamp":  time.Now().Format(time.RFC3339),
@@ -315,11 +315,25 @@ func (rt *Router) writeError(w http.ResponseWriter, key, reqID string, extra map
 	}
 	oaiErr, status := rt.errors.Render(key, replacements)
 
-	rt.logger.Warn("request error",
-		"request_id", reqID,
-		"error_key", key,
-		"http_status", status,
-	)
+	if backend != nil {
+		used, capacity := backend.SemaphoreUsage()
+		rt.logger.Warn("request error",
+			"request_id", reqID,
+			"error_key", key,
+			"http_status", status,
+			"backend", backend.Name,
+			"backend_url", backend.URL.String(),
+			"backend_healthy", backend.IsHealthy(),
+			"semaphore_used", used,
+			"semaphore_capacity", capacity,
+		)
+	} else {
+		rt.logger.Warn("request error",
+			"request_id", reqID,
+			"error_key", key,
+			"http_status", status,
+		)
+	}
 
 	errtpl.WriteError(w, status, oaiErr)
 }

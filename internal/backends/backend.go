@@ -110,6 +110,11 @@ func (b *Backend) Release() {
 	metrics.ActiveRequests.WithLabelValues(b.Name).Dec()
 }
 
+// SemaphoreUsage returns the current and max semaphore usage.
+func (b *Backend) SemaphoreUsage() (used int, capacity int) {
+	return len(b.semaphore), cap(b.semaphore)
+}
+
 // RecordFailure increments the consecutive failure count. After 3 failures,
 // the backend is marked unhealthy.
 func (b *Backend) RecordFailure() {
