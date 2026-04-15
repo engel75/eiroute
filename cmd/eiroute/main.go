@@ -22,9 +22,17 @@ import (
 	"github.com/engel75/eiroute/internal/router"
 )
 
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "./config/config.yaml", "path to config file")
 	flag.Parse()
+
+	// Handle version subcommand
+	if len(flag.Args()) > 0 && flag.Args()[0] == "version" {
+		fmt.Println(version)
+		return
+	}
 
 	// Load config first to determine log level.
 	cfg, err := config.Load(*configPath)
