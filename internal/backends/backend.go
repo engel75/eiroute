@@ -189,6 +189,9 @@ func (p *Pool) ReloadPool(cfgs []config.BackendConfig) error {
 				return fmt.Errorf("parsing backend URL %q: %w", cfg.URL, err)
 			}
 			b.URL = u
+			// Recreate semaphore with new capacity. In-flight requests still
+			// hold slots in the old channel; once they complete, it is GC'd.
+			b.semaphore = make(chan struct{}, cfg.MaxConcurrent)
 			b.MaxConcurrent = cfg.MaxConcurrent
 			b.Models = cfg.Models
 			b.OwnedBy = cfg.OwnedBy
