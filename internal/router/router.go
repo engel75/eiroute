@@ -148,10 +148,15 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
 	defer semCancel()
 	if err := backend.Acquire(semCtx); err != nil {
+		// Capture semaphore state immediately, before any releases
+		used, capacity := backend.SemaphoreUsage()
+		extra := map[string]string{
+			"model":              cr.Model,
+			"semaphore_used":     strconv.Itoa(used),
+			"semaphore_capacity": strconv.Itoa(capacity),
+		}
 		w.Header().Set("Retry-After", "5")
-		rt.writeError(w, "rate_limited", reqID, map[string]string{
-			"model": cr.Model,
-		}, backend)
+		rt.writeError(w, "rate_limited", reqID, extra, backend)
 		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, cr.Model).Inc()
 		return
 	}
