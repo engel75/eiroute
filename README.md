@@ -35,6 +35,28 @@ See [config.example.yaml](config.example.yaml) for a full example.
 
 ### Backend configuration
 
+**Minimal example (active model):**
+```yaml
+backends:
+  - name: minimax
+    url: http://192.168.37.107:8000
+    max_concurrent: 32
+    models: ["MiniMaxAI/MiniMax-M2.7"]
+```
+
+**Example (deprecated model):**
+```yaml
+backends:
+  - name: old-model-backend
+    url: http://backend:8000
+    models: ["OldModel"]
+    deprecated: true
+    successor: "MiniMaxAI/MiniMax-M3.0"
+    deprecated_notice_interval: 10  # 1 in 10 requests gets 303
+    retry_after: "30s"
+    static: true  # keeps model in /v1/models list
+```
+
 | Field | Default | Description |
 |-------|---------|-------------|
 | `name` | required | Unique backend name (used in metrics/health) |
@@ -51,20 +73,6 @@ See [config.example.yaml](config.example.yaml) for a full example.
 | `retry_after` | `""` | If set (e.g. `30s`), include Retry-After header on 301/303 responses |
 
 ### Model Deprecation
-
-When a model is being replaced by a new one, you can configure deprecation behavior:
-
-```yaml
-backends:
-  - name: old-model-backend
-    url: http://backend:8000
-    models: ["OldModel"]
-    deprecated: true
-    successor: "MiniMaxAI/MiniMax-M3.0"
-    deprecated_notice_interval: 10  # 1 in 10 requests gets 303
-    retry_after: "30s"
-    static: true  # keeps model in /v1/models list
-```
 
 **Behavior:**
 - `static: true, deprecated: true` → Model stays in `/v1/models`, clients get **303** with deprecation notice (probabilistically if `deprecated_notice_interval > 0`, always if 0)
