@@ -242,6 +242,18 @@ func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Bac
 	}
 
 	key := errtpl.ClassifyHTTPStatus(resp.StatusCode)
+	logLevel := slog.LevelWarn
+	if resp.StatusCode >= 500 {
+		logLevel = slog.LevelError
+	}
+	rt.logger.Log(context.Background(), logLevel, "upstream HTTP error",
+		"request_id", reqID,
+		"backend", backend.Name,
+		"model", model,
+		"upstream_status", resp.StatusCode,
+		"error_key", key,
+		"upstream_message", upstreamMsg,
+	)
 	oaiErr, status := rt.errors.Render(key, map[string]string{
 		"request_id":       reqID,
 		"model":            model,

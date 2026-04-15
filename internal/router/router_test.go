@@ -29,6 +29,7 @@ const testErrorTemplates = `{
   "backend_unavailable": {"message": "Model '{model}' unavailable. Request ID: {request_id}.", "type": "backend_unavailable", "code": "upstream_down", "http_status": 503},
   "unknown_model": {"message": "Model '{model}' not found. Available: {available_models}. Request ID: {request_id}.", "type": "invalid_request_error", "code": "model_not_found", "http_status": 404},
   "backend_overloaded": {"message": "Model '{model}' at capacity. Request ID: {request_id}.", "type": "rate_limit_error", "code": "backend_overloaded", "http_status": 429},
+  "rate_limited": {"message": "Model '{model}' rate limited. Request ID: {request_id}.", "type": "rate_limit_error", "code": "rate_limited", "http_status": 429},
   "backend_bad_request": {"message": "Backend rejected: {upstream_message}. Request ID: {request_id}.", "type": "invalid_request_error", "code": "upstream_bad_request", "http_status": 400},
   "backend_internal_error": {"message": "Backend error. Request ID: {request_id}.", "type": "api_error", "code": "upstream_internal_error", "http_status": 502},
   "stream_interrupted": {"message": "Stream interrupted. Request ID: {request_id}.", "type": "api_error", "code": "stream_interrupted"},
@@ -179,6 +180,49 @@ func TestProxy_BackendHTTP500(t *testing.T) {
 	}
 }
 
+func TestProxy_BackendHTTP429(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer upstream.Close()
+
+	// Use a logger that captures output
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	tpl := loadTestErrorTemplates(t)
+	pool, err := backends.NewPool([]config.BackendConfig{
+		{Name: "test-backend", URL: upstream.URL, MaxConcurrent: 4, Models: []string{"test-model"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := New(pool, tpl, http.DefaultTransport, 2*time.Second, logger)
+
+	w := doRequest(t, rt, `{"model":"test-model","stream":false}`)
+
+	if w.Code != 429 {
+		t.Errorf("status = %d, want 429", w.Code)
+	}
+	var oaiErr errtpl.OpenAIError
+	json.Unmarshal(w.Body.Bytes(), &oaiErr)
+	if oaiErr.Error.Code != "rate_limited" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "rate_limited")
+	}
+
+	// Verify that the 429 was logged
+	logOutput := logBuf.String()
+	t.Logf("Log output:\n%s", logOutput)
+	if !strings.Contains(logOutput, "upstream HTTP error") {
+		t.Error("expected 'upstream HTTP error' in log output")
+	}
+	if !strings.Contains(logOutput, "429") {
+		t.Error("expected '429' in log output")
+	}
+}
+
 func TestProxy_SemaphoreTimeout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
@@ -266,5 +310,41 @@ func TestHandleHealth(t *testing.T) {
 	}
 	if _, ok := resp.Backends["test-backend"]; !ok {
 		t.Error("expected test-backend in backends")
+	}
+}
+
+func TestProxy_BackendHTTP429_Streaming(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer upstream.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	tpl := loadTestErrorTemplates(t)
+	pool, err := backends.NewPool([]config.BackendConfig{
+		{Name: "test-backend", URL: upstream.URL, MaxConcurrent: 4, Models: []string{"test-model"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := New(pool, tpl, http.DefaultTransport, 2*time.Second, logger)
+
+	w := doRequest(t, rt, `{"model":"test-model","stream":true}`)
+
+	if w.Code != 429 {
+		t.Errorf("status = %d, want 429", w.Code)
+	}
+
+	logOutput := logBuf.String()
+	t.Logf("Log output:\n%s", logOutput)
+	if !strings.Contains(logOutput, "upstream HTTP error") {
+		t.Error("expected 'upstream HTTP error' in log output")
+	}
+	if !strings.Contains(logOutput, "429") {
+		t.Error("expected '429' in log output")
 	}
 }
