@@ -45,6 +45,35 @@ See [config.example.yaml](config.example.yaml) for a full example.
 | `models` | required | List of model names this backend serves |
 | `owned_by` | `""` | Per-backend `owned_by` for `/v1/models` |
 | `static` | `false` | If true, models remain in `/v1/models` even when backend is unhealthy |
+| `deprecated` | `false` | If true, marks model as deprecated. See Model Deprecation below. |
+| `successor` | `""` | Model name to redirect clients to (e.g. `MiniMaxAI/MiniMax-M3.0`) |
+| `deprecated_notice_interval` | `0` | If > 0, 1 in N requests returns 303 deprecation notice |
+| `retry_after` | `""` | If set (e.g. `30s`), include Retry-After header on 301/303 responses |
+
+### Model Deprecation
+
+When a model is being replaced by a new one, you can configure deprecation behavior:
+
+```yaml
+backends:
+  - name: old-model-backend
+    url: http://backend:8000
+    models: ["OldModel"]
+    deprecated: true
+    successor: "MiniMaxAI/MiniMax-M3.0"
+    deprecated_notice_interval: 10  # 1 in 10 requests gets 303
+    retry_after: "30s"
+    static: true  # keeps model in /v1/models list
+```
+
+**Behavior:**
+- `static: true, deprecated: true` → Model stays in `/v1/models`, clients get **303** with deprecation notice (probabilistically if `deprecated_notice_interval > 0`, always if 0)
+- `static: false, deprecated: true` → Model removed from `/v1/models`, but if called directly returns **301**
+- `retry_after` → Sets `Retry-After` header on 301/303 responses
+
+**Error templates:**
+- `model_deprecated` (303): "Model '{model}' is deprecated. Please use '{successor}' instead."
+- `model_outdated` (301): "Model '{model}' is no longer available. Please use '{successor}' instead."
 
 ## Error templates
 
@@ -69,6 +98,10 @@ See [errors.example.json](errors.example.json). Placeholders: `{model}`, `{backe
 | `llm_router_active_requests` | gauge | backend | In-flight requests |
 | `llm_router_backend_healthy` | gauge | backend | Backend health (0/1) |
 | `llm_router_semaphore_acquire_timeouts_total` | counter | backend | Semaphore timeouts |
+| `llm_router_upstream_429_total` | counter | backend, model | Upstream 429 responses |
+| `llm_router_backend_overloaded_total` | counter | backend, model | Local semaphore overload (429) |
+| `llm_router_upstream_errors_total` | counter | backend, model, status_code | All upstream HTTP errors |
+| `llm_router_health_check_duration_seconds` | histogram | backend | Health check latency |
 
 ## Hot Reload
 
@@ -81,6 +114,7 @@ curl -X POST http://localhost:8080/-/reload
 This will:
 - Re-read `config.yaml`
 - Update the backend pool (existing backends kept for in-flight requests)
+- **Re-load error templates from disk**
 - Clear the `/v1/models` cache
 
 Alternatively, send `SIGHUP`:
@@ -95,3 +129,17 @@ kill -HUP $(pidof eiroute)
 - Do not place gzip middleware or response caching in front of streaming endpoints.
 - If running behind Traefik, ensure the route does not buffer responses (Traefik does not buffer SSE by default).
 - Client disconnects are propagated to the upstream via `context.Cancel` and free the semaphore slot.
+
+## Debug Logging
+
+When `log_level` is set to `debug`, eiroute outputs a status line every 10 seconds:
+
+```json
+{"level":"DEBUG","msg":"debug status","backends":[{"name":"minimax","url":"http://...","healthy":true,"active_requests":5,"max_concurrent":32}],"total_connections":5,"memory_mb":45,"load_avg":0.5}
+```
+
+This includes:
+- Per-backend status (healthy, active requests, max concurrent)
+- Total active connections
+- Memory usage (MB)
+- System load average
