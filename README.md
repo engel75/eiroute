@@ -44,6 +44,21 @@ backends:
     models: ["MiniMaxAI/MiniMax-M2.7"]
 ```
 
+**Example (active model with all options):**
+```yaml
+backends:
+  - name: minimax
+    url: http://192.168.37.107:8000
+    max_concurrent: 32
+    health_path: /health
+    health_interval: 30s
+    models: ["MiniMaxAI/MiniMax-M2.7"]
+    owned_by: "minimax"
+    static: true  # keeps model in /v1/models even if backend is unhealthy
+```
+
+> **Note:** `static: true` ensures this model stays in `/v1/models` responses even when the health check fails. Use this for backends that may be temporarily down but should still be presented to clients.
+
 **Example (deprecated model):**
 ```yaml
 backends:
