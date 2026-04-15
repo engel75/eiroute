@@ -83,6 +83,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	mux.Handle("POST /v1/responses", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("GET /v1/models", router.RequestIDMiddleware(agg))
 	mux.HandleFunc("GET /health", rt.HandleHealth)
 	mux.Handle("GET /metrics", promhttp.Handler())

@@ -439,3 +439,30 @@ func TestDeprecatedModel_NoticeInterval_Probabilistic(t *testing.T) {
 		t.Error("expected only 303 or proxied responses, got other status codes")
 	}
 }
+
+func TestProxy_ResponsesRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"resp-1","output":[{"type":"message","id":"msg-1"}]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	// Make request directly to /v1/responses path (not via doRequest which uses /v1/chat/completions)
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","stream":false,"input":"hello"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["id"] != "resp-1" {
+		t.Errorf("unexpected response: %s", w.Body.String())
+	}
+}
