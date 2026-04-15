@@ -43,8 +43,8 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
           else
             SHORT_SHA="${GITHUB_SHA:0:7}"
             VERSION="dev-$SHORT_SHA"
