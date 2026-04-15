@@ -22,13 +22,14 @@ var (
 
 // Backend represents a single upstream LLM backend.
 type Backend struct {
-	Name          string
-	URL           *url.URL
-	Models        []string
-	OwnedBy       string
-	HealthPath    string
-	MaxConcurrent int
-	Static        bool
+	Name           string
+	URL            *url.URL
+	Models         []string
+	OwnedBy        string
+	HealthPath     string
+	HealthInterval time.Duration
+	MaxConcurrent  int
+	Static         bool
 
 	semaphore  chan struct{}
 	healthy    atomic.Bool
@@ -48,15 +49,16 @@ func NewBackend(cfg config.BackendConfig, healthVersion *atomic.Int64) (*Backend
 	}
 
 	b := &Backend{
-		Name:          cfg.Name,
-		URL:           u,
-		Models:        cfg.Models,
-		OwnedBy:       cfg.OwnedBy,
-		HealthPath:    cfg.HealthPath,
-		MaxConcurrent: cfg.MaxConcurrent,
-		Static:        cfg.Static,
-		semaphore:     make(chan struct{}, cfg.MaxConcurrent),
-		healthVersion: healthVersion,
+		Name:           cfg.Name,
+		URL:            u,
+		Models:         cfg.Models,
+		OwnedBy:        cfg.OwnedBy,
+		HealthPath:     cfg.HealthPath,
+		HealthInterval: cfg.HealthInterval.Duration,
+		MaxConcurrent:  cfg.MaxConcurrent,
+		Static:         cfg.Static,
+		semaphore:      make(chan struct{}, cfg.MaxConcurrent),
+		healthVersion:  healthVersion,
 	}
 	b.healthy.Store(true) // assume healthy until first check
 	return b, nil
@@ -192,6 +194,7 @@ func (p *Pool) ReloadPool(cfgs []config.BackendConfig) error {
 			b.OwnedBy = cfg.OwnedBy
 			b.Static = cfg.Static
 			b.HealthPath = cfg.HealthPath
+			b.HealthInterval = cfg.HealthInterval.Duration
 			newBackends = append(newBackends, b)
 		} else {
 			b, err := NewBackend(cfg, &p.HealthVersion)

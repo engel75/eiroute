@@ -49,13 +49,14 @@ type Config struct {
 }
 
 type BackendConfig struct {
-	Name          string   `yaml:"name"`
-	URL           string   `yaml:"url"`
-	MaxConcurrent int      `yaml:"max_concurrent"`
-	HealthPath    string   `yaml:"health_path"`
-	Models        []string `yaml:"models"`
-	OwnedBy       string   `yaml:"owned_by"`
-	Static        bool     `yaml:"static"`
+	Name           string   `yaml:"name"`
+	URL            string   `yaml:"url"`
+	MaxConcurrent  int      `yaml:"max_concurrent"`
+	HealthPath     string   `yaml:"health_path"`
+	HealthInterval Duration `yaml:"health_interval"`
+	Models         []string `yaml:"models"`
+	OwnedBy        string   `yaml:"owned_by"`
+	Static         bool     `yaml:"static"`
 }
 
 // Duration wraps time.Duration for YAML string unmarshalling.
@@ -116,6 +117,9 @@ func setDefaults(cfg *Config) {
 	for i := range cfg.Backends {
 		if cfg.Backends[i].HealthPath == "" {
 			cfg.Backends[i].HealthPath = "/health"
+		}
+		if cfg.Backends[i].HealthInterval.Duration == 0 {
+			cfg.Backends[i].HealthInterval.Duration = 10 * time.Second
 		}
 		if cfg.Backends[i].MaxConcurrent == 0 {
 			cfg.Backends[i].MaxConcurrent = 32
