@@ -466,3 +466,213 @@ func TestProxy_ResponsesRoute(t *testing.T) {
 		t.Errorf("unexpected response: %s", w.Body.String())
 	}
 }
+
+func TestProxy_EmbeddingsRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2]}]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","input":"hello"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_ClassifyRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"cls-1","label":"positive"}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","input":"hello"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/classify", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_TokenizeRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"tokens":[0,1,2]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","input":"hello"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/tokenize", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_DetokenizeRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"content":"hello"}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","token_ids":[0,1,2]}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/detokenize", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_AudioTranscriptionsRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"text":"hello"}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_ScoreRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"score-1","score":0.95}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","input":"hello"}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/score", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_RerankRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"rerank-1","results":[{"index":0,"relevance_score":0.9}]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","query":"q","documents":["d1"]}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/rerank", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_MessagesRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"msg-1","content":[{"type":"text","text":"hello"}]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"max_tokens":100}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_ApiChatRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model":"test-model","message":{"role":"assistant","content":"hello"}}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","messages":[{"role":"user","content":"hi"}]}`
+	r := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_ApiGenerateRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model":"test-model","response":"hello"}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","prompt":"hi"}`
+	r := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
