@@ -28,6 +28,27 @@ var (
 		Name: "llm_router_semaphore_acquire_timeouts_total",
 		Help: "Total semaphore acquire timeouts per backend.",
 	}, []string{"backend"})
+
+	Upstream429Total = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "upstream_429_total",
+		Help: "Total 429 responses from upstream per backend and model.",
+	}, []string{"backend", "model"})
+
+	BackendOverloadedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "backend_overloaded_total",
+		Help: "Total backend overloaded errors per backend and model.",
+	}, []string{"backend", "model"})
+
+	UpstreamErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "upstream_errors_total",
+		Help: "Total upstream errors per backend, model, and status code.",
+	}, []string{"backend", "model", "status_code"})
+
+	HealthCheckDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "health_check_duration_seconds",
+		Help:    "Health check duration in seconds by backend.",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+	}, []string{"backend"})
 )
 
 func Register() {
@@ -37,5 +58,9 @@ func Register() {
 		ActiveRequests,
 		BackendHealthy,
 		SemaphoreTimeoutsTotal,
+		Upstream429Total,
+		BackendOverloadedTotal,
+		UpstreamErrorsTotal,
+		HealthCheckDuration,
 	)
 }

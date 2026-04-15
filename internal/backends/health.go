@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/engel75/eiroute/internal/metrics"
 )
 
 const (
@@ -50,7 +52,9 @@ func checkOnce(ctx context.Context, b *Backend, client *http.Client, logger *slo
 		return
 	}
 
+	start := time.Now()
 	resp, err := client.Do(req)
+	metrics.HealthCheckDuration.WithLabelValues(b.Name).Observe(time.Since(start).Seconds())
 	if err != nil {
 		logger.Debug("health check failed", "backend", b.Name, "url", url, "error", err)
 		b.RecordFailure()

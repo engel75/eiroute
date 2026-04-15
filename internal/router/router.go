@@ -121,9 +121,10 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	defer semCancel()
 	if err := backend.Acquire(semCtx); err != nil {
 		w.Header().Set("Retry-After", "5")
-		rt.writeError(w, "rate_limited", reqID, map[string]string{
+		rt.writeError(w, "backend_overloaded", reqID, map[string]string{
 			"model": cr.Model,
 		})
+		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, cr.Model).Inc()
 		return
 	}
 	defer backend.Release()
@@ -254,6 +255,12 @@ func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Bac
 		"error_key", key,
 		"upstream_message", upstreamMsg,
 	)
+
+	if resp.StatusCode == 429 {
+		metrics.Upstream429Total.WithLabelValues(backend.Name, model).Inc()
+	}
+	metrics.UpstreamErrorsTotal.WithLabelValues(backend.Name, model, strconv.Itoa(resp.StatusCode)).Inc()
+
 	oaiErr, status := rt.errors.Render(key, map[string]string{
 		"request_id":       reqID,
 		"model":            model,
