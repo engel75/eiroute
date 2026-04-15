@@ -74,6 +74,12 @@ func main() {
 	rt := router.New(pool, errTemplates, transport, cfg.SemaphoreTimeout.Duration, logger)
 	agg := models.NewAggregator(pool, cfg.OwnedByOverride)
 
+	if config.GetLogLevel(cfg) == slog.LevelDebug {
+		debugCtx, debugCancel := context.WithCancel(context.Background())
+		defer debugCancel()
+		go rt.StartDebugLogger(debugCtx)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))

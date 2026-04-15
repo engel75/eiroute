@@ -11,6 +11,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -424,4 +426,61 @@ func (rt *Router) ReloadErrors(path string) error {
 	}
 	rt.errors = templates
 	return nil
+}
+
+func (rt *Router) StartDebugLogger(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rt.logDebugStatus()
+		}
+	}
+}
+
+func (rt *Router) logDebugStatus() {
+	type backendInfo struct {
+		Name           string `json:"name"`
+		URL            string `json:"url"`
+		Healthy        bool   `json:"healthy"`
+		ActiveRequests int32  `json:"active_requests"`
+		MaxConcurrent  int    `json:"max_concurrent"`
+	}
+
+	var totalConnections int32
+	backends := make([]backendInfo, 0, len(rt.pool.Backends()))
+	for _, b := range rt.pool.Backends() {
+		backends = append(backends, backendInfo{
+			Name:           b.Name,
+			URL:            b.URL.String(),
+			Healthy:        b.IsHealthy(),
+			ActiveRequests: b.ActiveRequestCount(),
+			MaxConcurrent:  b.MaxConcurrent,
+		})
+		totalConnections += b.ActiveRequestCount()
+	}
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	memoryRSSMB := memStats.HeapAlloc / 1024 / 1024
+
+	var loadAvg string
+	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+		parts := strings.Fields(string(data))
+		if len(parts) >= 1 {
+			loadAvg = parts[0]
+		}
+	}
+
+	rt.logger.Info("debug status",
+		"msg", "debug status",
+		"backends", backends,
+		"total_connections", totalConnections,
+		"memory_rss_mb", memoryRSSMB,
+		"load_avg", loadAvg,
+	)
 }
