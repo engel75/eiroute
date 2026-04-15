@@ -11,6 +11,18 @@
     "code": "model_not_found",
     "http_status": 404
   },
+  "model_deprecated": {
+    "message": "Model '{model}' is deprecated. Please use '{successor}' instead. Request ID: {request_id}.",
+    "type": "invalid_request_error",
+    "code": "model_deprecated",
+    "http_status": 303
+  },
+  "model_outdated": {
+    "message": "Model '{model}' is no longer available. Please use '{successor}' instead. Request ID: {request_id}.",
+    "type": "invalid_request_error",
+    "code": "model_outdated",
+    "http_status": 301
+  },
   "backend_overloaded": {
     "message": "The model '{model}' is rate limited by the backend. Please retry shortly. Request ID: {request_id}.",
     "type": "rate_limit_error",

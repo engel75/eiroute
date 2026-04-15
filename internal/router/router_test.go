@@ -28,6 +28,8 @@ func init() {
 const testErrorTemplates = `{
   "backend_unavailable": {"message": "Model '{model}' unavailable. Request ID: {request_id}.", "type": "backend_unavailable", "code": "upstream_down", "http_status": 503},
   "unknown_model": {"message": "Model '{model}' not found. Available: {available_models}. Request ID: {request_id}.", "type": "invalid_request_error", "code": "model_not_found", "http_status": 404},
+  "model_deprecated": {"message": "Model '{model}' is deprecated. Use '{successor}'. Request ID: {request_id}.", "type": "invalid_request_error", "code": "model_deprecated", "http_status": 303},
+  "model_outdated": {"message": "Model '{model}' is outdated. Use '{successor}'. Request ID: {request_id}.", "type": "invalid_request_error", "code": "model_outdated", "http_status": 301},
   "backend_overloaded": {"message": "Model '{model}' rate limited. Request ID: {request_id}.", "type": "rate_limit_error", "code": "backend_overloaded", "http_status": 429},
   "rate_limited": {"message": "Model '{model}' at capacity. Request ID: {request_id}.", "type": "rate_limit_error", "code": "rate_limited", "http_status": 429},
   "backend_bad_request": {"message": "Backend rejected: {upstream_message}. Request ID: {request_id}.", "type": "invalid_request_error", "code": "upstream_bad_request", "http_status": 400},
@@ -346,5 +348,94 @@ func TestProxy_BackendHTTP429_Streaming(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "429") {
 		t.Error("expected '429' in log output")
+	}
+}
+
+func setupRouterWithDeprecatedBackend(t *testing.T, deprecated, static bool, noticeInterval int, retryAfter string) *Router {
+	t.Helper()
+	tpl := loadTestErrorTemplates(t)
+	pool, err := backends.NewPool([]config.BackendConfig{
+		{
+			Name:                     "test-backend",
+			URL:                      "http://localhost:1",
+			MaxConcurrent:            4,
+			Models:                   []string{"deprecated-model"},
+			Static:                   static,
+			Deprecated:               deprecated,
+			Successor:                "new-model",
+			DeprecatedNoticeInterval: noticeInterval,
+			RetryAfter:               retryAfter,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	return New(pool, tpl, http.DefaultTransport, 2*time.Second, logger)
+}
+
+func TestDeprecatedModel_Static_Returns303(t *testing.T) {
+	rt := setupRouterWithDeprecatedBackend(t, true, true, 0, "")
+	w := doRequest(t, rt, `{"model":"deprecated-model","stream":false}`)
+
+	if w.Code != 303 {
+		t.Errorf("status = %d, want 303", w.Code)
+	}
+	var oaiErr errtpl.OpenAIError
+	json.Unmarshal(w.Body.Bytes(), &oaiErr)
+	if oaiErr.Error.Code != "model_deprecated" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "model_deprecated")
+	}
+	if !strings.Contains(oaiErr.Error.Message, "new-model") {
+		t.Errorf("message should contain successor, got: %s", oaiErr.Error.Message)
+	}
+}
+
+func TestDeprecatedModel_NonStatic_Returns301(t *testing.T) {
+	rt := setupRouterWithDeprecatedBackend(t, true, false, 0, "")
+	w := doRequest(t, rt, `{"model":"deprecated-model","stream":false}`)
+
+	if w.Code != 301 {
+		t.Errorf("status = %d, want 301", w.Code)
+	}
+	var oaiErr errtpl.OpenAIError
+	json.Unmarshal(w.Body.Bytes(), &oaiErr)
+	if oaiErr.Error.Code != "model_outdated" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "model_outdated")
+	}
+	if !strings.Contains(oaiErr.Error.Message, "new-model") {
+		t.Errorf("message should contain successor, got: %s", oaiErr.Error.Message)
+	}
+}
+
+func TestDeprecatedModel_WithRetryAfter(t *testing.T) {
+	rt := setupRouterWithDeprecatedBackend(t, true, true, 0, "30s")
+	w := doRequest(t, rt, `{"model":"deprecated-model","stream":false}`)
+
+	if w.Code != 303 {
+		t.Errorf("status = %d, want 303", w.Code)
+	}
+	if w.Header().Get("Retry-After") != "30s" {
+		t.Errorf("Retry-After = %q, want %q", w.Header().Get("Retry-After"), "30s")
+	}
+}
+
+func TestDeprecatedModel_NoticeInterval_Probabilistic(t *testing.T) {
+	rt := setupRouterWithDeprecatedBackend(t, true, true, 10, "")
+	seen303 := false
+	seenOther := false
+	for i := 0; i < 100; i++ {
+		w := doRequest(t, rt, `{"model":"deprecated-model","stream":false}`)
+		if w.Code == 303 {
+			seen303 = true
+		} else if w.Code != 0 && w.Code != 200 {
+			seenOther = true
+		}
+	}
+	if !seen303 {
+		t.Error("expected at least one 303 response with noticeInterval=10")
+	}
+	if seenOther {
+		t.Error("expected only 303 or proxied responses, got other status codes")
 	}
 }

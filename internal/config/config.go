@@ -49,14 +49,18 @@ type Config struct {
 }
 
 type BackendConfig struct {
-	Name           string   `yaml:"name"`
-	URL            string   `yaml:"url"`
-	MaxConcurrent  int      `yaml:"max_concurrent"`
-	HealthPath     string   `yaml:"health_path"`
-	HealthInterval Duration `yaml:"health_interval"`
-	Models         []string `yaml:"models"`
-	OwnedBy        string   `yaml:"owned_by"`
-	Static         bool     `yaml:"static"`
+	Name                     string   `yaml:"name"`
+	URL                      string   `yaml:"url"`
+	MaxConcurrent            int      `yaml:"max_concurrent"`
+	HealthPath               string   `yaml:"health_path"`
+	HealthInterval           Duration `yaml:"health_interval"`
+	Models                   []string `yaml:"models"`
+	OwnedBy                  string   `yaml:"owned_by"`
+	Static                   bool     `yaml:"static"`
+	Deprecated               bool     `yaml:"deprecated"`
+	Successor                string   `yaml:"successor"`
+	DeprecatedNoticeInterval int      `yaml:"deprecated_notice_interval"` // 0 = off, N = 1 in N requests
+	RetryAfter               string   `yaml:"retry_after"`                // "off" or duration like "30s"
 }
 
 // Duration wraps time.Duration for YAML string unmarshalling.

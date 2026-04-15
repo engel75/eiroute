@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
 	"strconv"
@@ -115,6 +116,31 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		"backend", backend.Name,
 		"backend_url", backend.URL.String(),
 	)
+
+	if backend.Deprecated && backend.Successor != "" {
+		if backend.RetryAfter > 0 {
+			w.Header().Set("Retry-After", backend.RetryAfter.String())
+		}
+		if backend.DeprecatedNoticeInterval > 0 && rand.IntN(backend.DeprecatedNoticeInterval) == 0 {
+			rt.writeError(w, "model_deprecated", reqID, map[string]string{
+				"model":     cr.Model,
+				"successor": backend.Successor,
+			})
+			return
+		} else if backend.Static {
+			rt.writeError(w, "model_deprecated", reqID, map[string]string{
+				"model":     cr.Model,
+				"successor": backend.Successor,
+			})
+			return
+		} else {
+			rt.writeError(w, "model_outdated", reqID, map[string]string{
+				"model":     cr.Model,
+				"successor": backend.Successor,
+			})
+			return
+		}
+	}
 
 	// Acquire semaphore.
 	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)

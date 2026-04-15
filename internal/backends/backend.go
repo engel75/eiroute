@@ -22,14 +22,18 @@ var (
 
 // Backend represents a single upstream LLM backend.
 type Backend struct {
-	Name           string
-	URL            *url.URL
-	Models         []string
-	OwnedBy        string
-	HealthPath     string
-	HealthInterval time.Duration
-	MaxConcurrent  int
-	Static         bool
+	Name                     string
+	URL                      *url.URL
+	Models                   []string
+	OwnedBy                  string
+	HealthPath               string
+	HealthInterval           time.Duration
+	MaxConcurrent            int
+	Static                   bool
+	Deprecated               bool
+	Successor                string
+	DeprecatedNoticeInterval int
+	RetryAfter               time.Duration
 
 	semaphore  chan struct{}
 	healthy    atomic.Bool
@@ -48,17 +52,29 @@ func NewBackend(cfg config.BackendConfig, healthVersion *atomic.Int64) (*Backend
 		return nil, fmt.Errorf("parsing backend URL %q: %w", cfg.URL, err)
 	}
 
+	var retryAfter time.Duration
+	if cfg.RetryAfter != "" && cfg.RetryAfter != "off" {
+		retryAfter, err = time.ParseDuration(cfg.RetryAfter)
+		if err != nil {
+			return nil, fmt.Errorf("parsing retry_after %q: %w", cfg.RetryAfter, err)
+		}
+	}
+
 	b := &Backend{
-		Name:           cfg.Name,
-		URL:            u,
-		Models:         cfg.Models,
-		OwnedBy:        cfg.OwnedBy,
-		HealthPath:     cfg.HealthPath,
-		HealthInterval: cfg.HealthInterval.Duration,
-		MaxConcurrent:  cfg.MaxConcurrent,
-		Static:         cfg.Static,
-		semaphore:      make(chan struct{}, cfg.MaxConcurrent),
-		healthVersion:  healthVersion,
+		Name:                     cfg.Name,
+		URL:                      u,
+		Models:                   cfg.Models,
+		OwnedBy:                  cfg.OwnedBy,
+		HealthPath:               cfg.HealthPath,
+		HealthInterval:           cfg.HealthInterval.Duration,
+		MaxConcurrent:            cfg.MaxConcurrent,
+		Static:                   cfg.Static,
+		Deprecated:               cfg.Deprecated,
+		Successor:                cfg.Successor,
+		DeprecatedNoticeInterval: cfg.DeprecatedNoticeInterval,
+		RetryAfter:               retryAfter,
+		semaphore:                make(chan struct{}, cfg.MaxConcurrent),
+		healthVersion:            healthVersion,
 	}
 	b.healthy.Store(true) // assume healthy until first check
 	return b, nil
@@ -196,6 +212,17 @@ func (p *Pool) ReloadPool(cfgs []config.BackendConfig) error {
 			b.Static = cfg.Static
 			b.HealthPath = cfg.HealthPath
 			b.HealthInterval = cfg.HealthInterval.Duration
+			b.Deprecated = cfg.Deprecated
+			b.Successor = cfg.Successor
+			b.DeprecatedNoticeInterval = cfg.DeprecatedNoticeInterval
+			if cfg.RetryAfter != "" && cfg.RetryAfter != "off" {
+				b.RetryAfter, err = time.ParseDuration(cfg.RetryAfter)
+				if err != nil {
+					return fmt.Errorf("parsing retry_after %q: %w", cfg.RetryAfter, err)
+				}
+			} else {
+				b.RetryAfter = 0
+			}
 			newBackends = append(newBackends, b)
 		} else {
 			b, err := NewBackend(cfg, &p.HealthVersion)
