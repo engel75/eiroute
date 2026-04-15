@@ -44,12 +44,12 @@ jobs:
         id: version
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
+            APP_VERSION="${GITHUB_REF#refs/tags/v}"
           else
             SHORT_SHA="${GITHUB_SHA:0:7}"
-            VERSION="dev-$SHORT_SHA"
+            APP_VERSION="dev-$SHORT_SHA"
           fi
-          echo "VERSION=$VERSION" >> "${GITHUB_OUTPUT}"
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -61,4 +61,4 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            VERSION=${{ steps.version.outputs.VERSION }}
+            APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
