@@ -43,7 +43,7 @@ jobs:
         id: version
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            APP_VERSION="${GITHUB_REF#refs/tags/v}"
+            APP_VERSION="${GITHUB_REF#refs/tags/}"
           else
             SHORT_SHA="${GITHUB_SHA:0:7}"
             APP_VERSION="dev-$SHORT_SHA"
