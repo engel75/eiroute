@@ -133,7 +133,7 @@ func ClassifyHTTPStatus(statusCode int) string {
 	case statusCode == 400:
 		return "backend_bad_request"
 	case statusCode == 429:
-		return "rate_limited"
+		return "backend_overloaded"
 	case statusCode >= 500:
 		return "backend_internal_error"
 	default:

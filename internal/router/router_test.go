@@ -28,8 +28,8 @@ func init() {
 const testErrorTemplates = `{
   "backend_unavailable": {"message": "Model '{model}' unavailable. Request ID: {request_id}.", "type": "backend_unavailable", "code": "upstream_down", "http_status": 503},
   "unknown_model": {"message": "Model '{model}' not found. Available: {available_models}. Request ID: {request_id}.", "type": "invalid_request_error", "code": "model_not_found", "http_status": 404},
-  "backend_overloaded": {"message": "Model '{model}' at capacity. Request ID: {request_id}.", "type": "rate_limit_error", "code": "backend_overloaded", "http_status": 429},
-  "rate_limited": {"message": "Model '{model}' rate limited. Request ID: {request_id}.", "type": "rate_limit_error", "code": "rate_limited", "http_status": 429},
+  "backend_overloaded": {"message": "Model '{model}' rate limited. Request ID: {request_id}.", "type": "rate_limit_error", "code": "backend_overloaded", "http_status": 429},
+  "rate_limited": {"message": "Model '{model}' at capacity. Request ID: {request_id}.", "type": "rate_limit_error", "code": "rate_limited", "http_status": 429},
   "backend_bad_request": {"message": "Backend rejected: {upstream_message}. Request ID: {request_id}.", "type": "invalid_request_error", "code": "upstream_bad_request", "http_status": 400},
   "backend_internal_error": {"message": "Backend error. Request ID: {request_id}.", "type": "api_error", "code": "upstream_internal_error", "http_status": 502},
   "stream_interrupted": {"message": "Stream interrupted. Request ID: {request_id}.", "type": "api_error", "code": "stream_interrupted"},
@@ -208,8 +208,8 @@ func TestProxy_BackendHTTP429(t *testing.T) {
 	}
 	var oaiErr errtpl.OpenAIError
 	json.Unmarshal(w.Body.Bytes(), &oaiErr)
-	if oaiErr.Error.Code != "rate_limited" {
-		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "rate_limited")
+	if oaiErr.Error.Code != "backend_overloaded" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "backend_overloaded")
 	}
 
 	// Verify that the 429 was logged

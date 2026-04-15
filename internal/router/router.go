@@ -121,7 +121,7 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	defer semCancel()
 	if err := backend.Acquire(semCtx); err != nil {
 		w.Header().Set("Retry-After", "5")
-		rt.writeError(w, "backend_overloaded", reqID, map[string]string{
+		rt.writeError(w, "rate_limited", reqID, map[string]string{
 			"model": cr.Model,
 		})
 		return

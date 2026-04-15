@@ -12,7 +12,7 @@
     "http_status": 404
   },
   "backend_overloaded": {
-    "message": "The model '{model}' is currently at capacity. Please retry shortly. Request ID: {request_id}.",
+    "message": "The model '{model}' is rate limited by the backend. Please retry shortly. Request ID: {request_id}.",
     "type": "rate_limit_error",
     "code": "backend_overloaded",
     "http_status": 429
@@ -33,6 +33,12 @@
     "message": "The stream was interrupted due to a backend error. Partial output was delivered. Request ID: {request_id}.",
     "type": "api_error",
     "code": "stream_interrupted"
+  },
+  "rate_limited": {
+    "message": "The model '{model}' is currently at capacity. Please retry shortly. Request ID: {request_id}.",
+    "type": "rate_limit_error",
+    "code": "rate_limited",
+    "http_status": 429
   },
   "router_internal_error": {
     "message": "The router encountered an internal error. Request ID: {request_id}.",
