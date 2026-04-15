@@ -315,19 +315,23 @@ func (rt *Router) writeError(w http.ResponseWriter, key, reqID string, extra map
 	}
 	oaiErr, status := rt.errors.Render(key, replacements)
 
-	rt.logger.Warn("request error",
-		"request_id", reqID,
-		"error_key", key,
-		"http_status", status,
-	)
 	if backend != nil {
 		used, capacity := backend.SemaphoreUsage()
 		rt.logger.Warn("request error",
+			"request_id", reqID,
+			"error_key", key,
+			"http_status", status,
 			"backend", backend.Name,
 			"backend_url", backend.URL.String(),
 			"backend_healthy", backend.IsHealthy(),
 			"semaphore_used", used,
 			"semaphore_capacity", capacity,
+		)
+	} else {
+		rt.logger.Warn("request error",
+			"request_id", reqID,
+			"error_key", key,
+			"http_status", status,
 		)
 	}
 
