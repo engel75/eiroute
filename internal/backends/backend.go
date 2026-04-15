@@ -190,6 +190,7 @@ func (p *Pool) ReloadPool(cfgs []config.BackendConfig) error {
 			}
 			b.URL = u
 			b.MaxConcurrent = cfg.MaxConcurrent
+			b.semaphore = make(chan struct{}, cfg.MaxConcurrent)
 			b.Models = cfg.Models
 			b.OwnedBy = cfg.OwnedBy
 			b.Static = cfg.Static
