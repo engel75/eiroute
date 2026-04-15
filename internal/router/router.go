@@ -279,6 +279,13 @@ func (rt *Router) writeError(w http.ResponseWriter, key, reqID string, extra map
 		replacements[k] = v
 	}
 	oaiErr, status := rt.errors.Render(key, replacements)
+
+	rt.logger.Warn("request error",
+		"request_id", reqID,
+		"error_key", key,
+		"http_status", status,
+	)
+
 	errtpl.WriteError(w, status, oaiErr)
 }
 
