@@ -69,6 +69,7 @@ backends:
     url: "http://sglang-minimax:8000"
     max_concurrent: 32
     health_path: "/health"
+    health_interval: "10s"
     models: ["MiniMaxAI/MiniMax-M2.7"]
     # Optional per-backend owned_by, used only if owned_by_override is empty.
     owned_by: "everyware"

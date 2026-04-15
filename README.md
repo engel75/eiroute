@@ -41,6 +41,7 @@ See [config.example.yaml](config.example.yaml) for a full example.
 | `url` | required | Backend base URL |
 | `max_concurrent` | `32` | Max concurrent requests (semaphore capacity) |
 | `health_path` | `/health` | Health check endpoint path |
+| `health_interval` | `10s` | Health check interval (duration string, e.g. `10s`, `30s`, `1m`) |
 | `models` | required | List of model names this backend serves |
 | `owned_by` | `""` | Per-backend `owned_by` for `/v1/models` |
 | `static` | `false` | If true, models remain in `/v1/models` even when backend is unhealthy |

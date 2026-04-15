@@ -8,8 +8,7 @@ import (
 )
 
 const (
-	healthCheckInterval = 10 * time.Second
-	healthCheckTimeout  = 3 * time.Second
+	healthCheckTimeout = 3 * time.Second
 )
 
 // StartHealthChecks launches a goroutine per backend that periodically checks
@@ -23,7 +22,7 @@ func StartHealthChecks(ctx context.Context, backends []*Backend, logger *slog.Lo
 }
 
 func runHealthCheck(ctx context.Context, b *Backend, client *http.Client, logger *slog.Logger) {
-	ticker := time.NewTicker(healthCheckInterval)
+	ticker := time.NewTicker(b.HealthInterval)
 	defer ticker.Stop()
 
 	// Run one check immediately at startup.
