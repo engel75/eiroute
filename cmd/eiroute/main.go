@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/engel75/eiroute/internal/backends"
@@ -80,14 +81,30 @@ func main() {
 		go rt.StartDebugLogger(debugCtx)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
-	mux.Handle("POST /v1/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
-	mux.Handle("POST /v1/responses", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
-	mux.Handle("GET /v1/models", router.RequestIDMiddleware(agg))
-	mux.HandleFunc("GET /health", rt.HandleHealth)
-	mux.Handle("GET /metrics", promhttp.Handler())
-	mux.HandleFunc("POST /-/reload", func(w http.ResponseWriter, r *http.Request) {
+	r := mux.NewRouter()
+	r.Handle("POST /v1/chat/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/responses", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/embeddings", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/classify", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/tokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/detokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/audio/transcriptions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/score", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/rerank", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /rerank", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v2/rerank", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/messages", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /v1/messages/count_tokens", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCountTokens)))
+	r.Handle("GET /v1/responses/{id}", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleResponsesRetrieve)))
+	r.Handle("POST /v1/responses/{id}/cancel", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleResponsesCancel)))
+	r.Handle("GET /v1/models", router.RequestIDMiddleware(agg))
+	r.HandleFunc("GET /health", rt.HandleHealth)
+	r.Handle("GET /metrics", promhttp.Handler())
+	r.Handle("POST /api/chat", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("POST /api/generate", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	r.Handle("GET /v1/realtime", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleRealtime)))
+	r.Handle("POST /-/reload", router.RequestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		newCfg, err := config.Reload(*configPath)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("reload failed: %v", err), http.StatusInternalServerError)
@@ -104,11 +121,11 @@ func main() {
 		agg.Reload()
 		logger.Info("config reloaded via HTTP", "backends", len(newCfg.Backends))
 		w.Write([]byte("OK\n"))
-	})
+	})))
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           mux,
+		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       cfg.IdleConnTimeout.Duration,
 	}

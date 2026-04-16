@@ -1,0 +1,154 @@
+# Plan: /v1/tokenize und /v1/detokenize Proxy
+
+## TL;DR
+
+> **Quick Summary**: Route `POST /v1/tokenize` und `POST /v1/detokenize` durch eiroute an Backend durchreichen
+>
+> **Deliverables**:
+> - Routes in main.go
+> - Wiederverwendung von `HandleCompletion` Handler
+> - Tests in router_test.go
+>
+> **Estimated Effort**: Quick (2 Dateien, <30 Zeilen)
+> **Parallel Execution**: NO
+> **Critical Path**: main.go → router_test.go
+
+---
+
+## Context
+
+### Original Request
+User möchte alle SGLang-Endpoints durch eiroute reichen.
+
+### Interview Summary
+- SGLang Backend unterstützt `/v1/tokenize` und `/v1/detokenize`
+- Request-Body hat `model` + `input`
+- `HandleCompletion` Handler kann wiederverwendet werden
+
+### Metis Review
+Nicht erforderlich - triviale Änderung.
+
+---
+
+## Work Objectives
+
+### Core Objective
+`POST /v1/tokenize` und `POST /v1/detokenize` Requests sollen an Backend durchgereicht werden.
+
+### Concrete Deliverables
+- `main.go`: Routes hinzufügen
+- `router_test.go`: Tests
+
+### Definition of Done
+- [x] `curl -X POST http://localhost:8080/v1/tokenize -d '{"model":"test","input":"hello"}'` → 200
+- [x] `curl -X POST http://localhost:8080/v1/detokenize -d '{"model":"test","token_ids":[1,2,3]}'` → 200
+
+---
+
+## TODOs
+
+- [x] 1. Routes für /v1/tokenize und /v1/detokenize in main.go hinzufügen
+
+  **What to do**:
+  - In `cmd/eiroute/main.go`:
+    - `mux.Handle("POST /v1/tokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))`
+    - `mux.Handle("POST /v1/detokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))`
+
+  **Recommended Agent Profile**:
+  - **Category**: `quick`
+
+  **Parallelization**:
+  - **Can Run In Parallel**: NO
+  - **Blocks**: Task 2
+
+  **References**:
+  - `cmd/eiroute/main.go` - Bestehende POST Routes als Template
+
+  **Acceptance Criteria**:
+  - [x] Beide Routes in main.go vorhanden
+
+  **QA Scenarios**:
+
+  \`\`\`
+  Scenario: POST /v1/tokenize forwarded to backend
+    Tool: Bash (curl)
+    Preconditions: eiroute läuft mit konfiguriertem Backend
+    Steps:
+      1. curl -X POST http://localhost:8080/v1/tokenize \
+         -H "Content-Type: application/json" \
+         -d '{"model":"MiniMaxAI/MiniMax-M2.7","input":"hello"}'
+    Expected Result: HTTP 200, JSON Response mit "tokens" Array
+    Evidence: .sisyphus/evidence/task-1-tokenize-proxy.md
+
+  Scenario: POST /v1/detokenize forwarded to backend
+    Tool: Bash (curl)
+    Preconditions: eiroute läuft mit konfiguriertem Backend
+    Steps:
+      1. curl -X POST http://localhost:8080/v1/detokenize \
+         -H "Content-Type: application/json" \
+         -d '{"model":"MiniMaxAI/MiniMax-M2.7","token_ids":[1,2,3]}'
+    Expected Result: HTTP 200, JSON Response mit "content" String
+    Evidence: .sisyphus/evidence/task-1-detokenize-proxy.md
+  \`\`\`
+
+  **Commit**: YES
+  - Message: `feat: proxy POST /v1/tokenize and /v1/detokenize to backend`
+  - Files: `cmd/eiroute/main.go`
+
+---
+
+- [x] 2. Tests für /v1/tokenize und /v1/detokenize in router_test.go
+
+  **What to do**:
+  - In `internal/router/router_test.go`:
+    - Test für `/v1/tokenize`
+    - Test für `/v1/detokenize`
+
+  **Recommended Agent Profile**:
+  - **Category**: `quick`
+
+  **Parallelization**:
+  - **Can Run In Parallel**: NO
+  - **Blocked By**: Task 1
+
+  **Acceptance Criteria**:
+  - [x] `go test ./internal/router/...` → PASS
+
+  **QA Scenarios**:
+
+  \`\`\`
+  Scenario: router_test.go compiles and passes
+    Tool: Bash
+    Preconditions: Keine
+    Steps:
+      1. go test ./internal/router/... -v
+    Expected Result: Alle Tests PASS
+    Evidence: .sisyphus/evidence/task-2-tokenize-tests.md
+  \`\`\`
+
+  **Commit**: YES
+  - Message: `test: add /v1/tokenize and /v1/detokenize route tests`
+  - Files: `internal/router/router_test.go`
+
+---
+
+## Final Verification Wave
+
+- [x] F1. **Build Check** — `go build ./...` → Erfolgreich
+- [x] F2. **Test Run** — `go test ./...` → Alle Tests PASS
+
+---
+
+## Commit Strategy
+
+- 1: `feat: proxy POST /v1/tokenize and /v1/detokenize to backend` - cmd/eiroute/main.go
+- 2: `test: add /v1/tokenize and /v1/detokenize route tests` - internal/router/router_test.go
+
+---
+
+## Success Criteria
+
+- [x] Route in main.go registriert
+- [x] Test hinzugefügt
+- [x] go build erfolgreich
+- [x] go test erfolgreich

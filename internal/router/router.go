@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 
 	"github.com/engel75/eiroute/internal/backends"
 	errtpl "github.com/engel75/eiroute/internal/errors"
@@ -204,6 +205,128 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		"status", status,
 		"duration_ms", int64(duration*1000),
 	)
+}
+
+func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *backends.Backend, body []byte, reqID string, model string, start time.Time) {
+	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
+	defer semCancel()
+	if err := backend.Acquire(semCtx); err != nil {
+		used, capacity := backend.SemaphoreUsage()
+		extra := map[string]string{
+			"model":              model,
+			"semaphore_used":     strconv.Itoa(used),
+			"semaphore_capacity": strconv.Itoa(capacity),
+		}
+		w.Header().Set("Retry-After", "5")
+		rt.writeError(w, "rate_limited", reqID, extra, backend)
+		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, model).Inc()
+		return
+	}
+	defer backend.Release()
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = backend.URL.Scheme
+			req.URL.Host = backend.URL.Host
+			req.Host = backend.URL.Host
+			if body != nil {
+				req.Body = io.NopCloser(bytes.NewReader(body))
+				req.ContentLength = int64(len(body))
+			}
+			req.Header.Set("X-Request-ID", reqID)
+		},
+		Transport:    rt.transport,
+		ErrorHandler: rt.makeErrorHandler(backend, reqID, model),
+	}
+
+	tw := &trackingWriter{
+		ResponseWriter: w,
+		reqID:          reqID,
+		backend:        backend.Name,
+		model:          model,
+		logger:         rt.logger,
+	}
+	proxy.ServeHTTP(tw, r)
+
+	duration := time.Since(start).Seconds()
+	status := rt.resolveStatus(tw, false)
+	metrics.RequestsTotal.WithLabelValues(backend.Name, model, status).Inc()
+	metrics.RequestDuration.WithLabelValues(backend.Name, model).Observe(duration)
+
+	rt.logger.Info("request completed",
+		"request_id", reqID,
+		"backend", backend.Name,
+		"model", model,
+		"status", status,
+		"duration_ms", int64(duration*1000),
+	)
+}
+
+func (rt *Router) proxyWebSocket(w http.ResponseWriter, r *http.Request, backend *backends.Backend, reqID string) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+
+	connBackend, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		rt.logger.Error("websocket upgrade failed",
+			"request_id", reqID,
+			"backend", backend.Name,
+			"error", err,
+		)
+		return
+	}
+	defer connBackend.Close()
+
+	backendURL := *backend.URL
+	backendURL.Scheme = "ws"
+	if backendURL.Scheme == "https" {
+		backendURL.Scheme = "wss"
+	}
+
+	connUpstream, _, err := websocket.DefaultDialer.Dial(backendURL.String()+r.URL.Path, r.Header)
+	if err != nil {
+		rt.logger.Error("websocket dial to backend failed",
+			"request_id", reqID,
+			"backend", backend.Name,
+			"error", err,
+		)
+		return
+	}
+	defer connUpstream.Close()
+
+	done := make(chan struct{})
+
+	go func() {
+		for {
+			_, msg, err := connBackend.ReadMessage()
+			if err != nil {
+				close(done)
+				return
+			}
+			if err := connUpstream.WriteMessage(websocket.TextMessage, msg); err != nil {
+				close(done)
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			_, msg, err := connUpstream.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := connBackend.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func (rt *Router) makeErrorHandler(backend *backends.Backend, reqID, model string) func(http.ResponseWriter, *http.Request, error) {
@@ -502,4 +625,108 @@ func (rt *Router) logDebugStatus() {
 		"memory_rss_mb", memoryRSSMB,
 		"load_avg", loadAvg,
 	)
+}
+
+// HandleCountTokens handles POST /v1/messages/count_tokens.
+func (rt *Router) HandleCountTokens(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	reqID := RequestIDFromContext(r.Context())
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		rt.writeError(w, "router_internal_error", reqID, nil, nil)
+		return
+	}
+
+	var cr completionRequest
+	if err := json.Unmarshal(body, &cr); err != nil {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "invalid JSON in request body",
+		}, nil)
+		return
+	}
+
+	backend, err := rt.pool.SelectBackend(cr.Model)
+	if err != nil {
+		switch err {
+		case backends.ErrUnknownModel:
+			rt.writeError(w, "unknown_model", reqID, map[string]string{
+				"model":            cr.Model,
+				"available_models": strings.Join(rt.pool.AllModels(), ", "),
+			}, nil)
+		default:
+			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
+				"model": cr.Model,
+			}, nil)
+		}
+		return
+	}
+
+	rt.proxyRequest(w, r, backend, body, reqID, cr.Model, start)
+}
+
+// HandleResponsesRetrieve handles GET /v1/responses/{id}.
+func (rt *Router) HandleResponsesRetrieve(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	reqID := RequestIDFromContext(r.Context())
+
+	backend, err := rt.pool.SelectAnyBackend()
+	if err != nil {
+		rt.writeError(w, "backend_unavailable", reqID, nil, nil)
+		return
+	}
+
+	rt.proxyRequest(w, r, backend, nil, reqID, "", start)
+}
+
+// HandleResponsesCancel handles POST /v1/responses/{id}/cancel.
+func (rt *Router) HandleResponsesCancel(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	reqID := RequestIDFromContext(r.Context())
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		rt.writeError(w, "router_internal_error", reqID, nil, nil)
+		return
+	}
+
+	var cr completionRequest
+	json.Unmarshal(body, &cr)
+
+	var backend *backends.Backend
+	var model string
+
+	if cr.Model != "" {
+		backend, err = rt.pool.SelectBackend(cr.Model)
+		model = cr.Model
+	} else {
+		backend, err = rt.pool.SelectAnyBackend()
+	}
+	if err != nil {
+		switch err {
+		case backends.ErrUnknownModel:
+			rt.writeError(w, "unknown_model", reqID, map[string]string{
+				"model":            cr.Model,
+				"available_models": strings.Join(rt.pool.AllModels(), ", "),
+			}, nil)
+		default:
+			rt.writeError(w, "backend_unavailable", reqID, nil, nil)
+		}
+		return
+	}
+
+	rt.proxyRequest(w, r, backend, body, reqID, model, start)
+}
+
+// HandleRealtime handles WS /v1/realtime.
+func (rt *Router) HandleRealtime(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+
+	backend, err := rt.pool.SelectAnyBackend()
+	if err != nil {
+		rt.writeError(w, "backend_unavailable", reqID, nil, nil)
+		return
+	}
+
+	rt.proxyWebSocket(w, r, backend, reqID)
 }

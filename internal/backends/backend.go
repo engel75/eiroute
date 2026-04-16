@@ -263,6 +263,40 @@ func (p *Pool) AllModels() []string {
 	return models
 }
 
+// SelectAnyBackend picks any healthy backend (used for non-model-specific endpoints).
+func (p *Pool) SelectAnyBackend() (*Backend, error) {
+	backends := p.Backends()
+	if len(backends) == 0 {
+		return nil, ErrBackendUnavailable
+	}
+
+	var healthy []*Backend
+	for _, b := range backends {
+		if b.IsHealthy() {
+			healthy = append(healthy, b)
+		}
+	}
+	if len(healthy) == 0 {
+		return nil, ErrBackendUnavailable
+	}
+
+	minReqs := healthy[0].ActiveRequestCount()
+	for _, b := range healthy[1:] {
+		if r := b.ActiveRequestCount(); r < minReqs {
+			minReqs = r
+		}
+	}
+
+	var best []*Backend
+	for _, b := range healthy {
+		if b.ActiveRequestCount() == minReqs {
+			best = append(best, b)
+		}
+	}
+
+	return best[rand.IntN(len(best))], nil
+}
+
 // SelectBackend picks the healthiest, least-loaded backend for the given model.
 func (p *Pool) SelectBackend(model string) (*Backend, error) {
 	candidates, ok := p.modelIndex[model]
