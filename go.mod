@@ -3,7 +3,6 @@ module github.com/engel75/eiroute
 go 1.26.2
 
 require (
-	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.23.2
 	gopkg.in/yaml.v3 v3.0.1
