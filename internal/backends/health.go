@@ -15,8 +15,11 @@ const (
 
 // StartHealthChecks launches a goroutine per backend that periodically checks
 // its health endpoint. Cancel the context to stop all checks.
-func StartHealthChecks(ctx context.Context, backends []*Backend, logger *slog.Logger) {
-	client := &http.Client{Timeout: healthCheckTimeout}
+func StartHealthChecks(ctx context.Context, backends []*Backend, transport http.RoundTripper, logger *slog.Logger) {
+	client := &http.Client{
+		Timeout:   healthCheckTimeout,
+		Transport: transport,
+	}
 
 	for _, b := range backends {
 		go runHealthCheck(ctx, b, client, logger)

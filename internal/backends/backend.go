@@ -210,8 +210,10 @@ func (p *Pool) ReloadPool(cfgs []config.BackendConfig) error {
 				return fmt.Errorf("parsing backend URL %q: %w", cfg.URL, err)
 			}
 			b.URL = u
+			if b.MaxConcurrent != cfg.MaxConcurrent {
+				b.semaphore = make(chan struct{}, cfg.MaxConcurrent)
+			}
 			b.MaxConcurrent = cfg.MaxConcurrent
-			b.semaphore = make(chan struct{}, cfg.MaxConcurrent)
 			b.Models = cfg.Models
 			b.OwnedBy = cfg.OwnedBy
 			b.Static = cfg.Static
@@ -270,31 +272,28 @@ func (p *Pool) SelectAnyBackend() (*Backend, error) {
 		return nil, ErrBackendUnavailable
 	}
 
-	var healthy []*Backend
+	var best *Backend
+	minReqs := int32(1<<31 - 1)
 	for _, b := range backends {
-		if b.IsHealthy() {
-			healthy = append(healthy, b)
+		if !b.IsHealthy() {
+			continue
+		}
+		if r := b.ActiveRequestCount(); r < minReqs {
+			minReqs = r
+			best = b
 		}
 	}
-	if len(healthy) == 0 {
+	if best == nil {
 		return nil, ErrBackendUnavailable
 	}
 
-	minReqs := healthy[0].ActiveRequestCount()
-	for _, b := range healthy[1:] {
-		if r := b.ActiveRequestCount(); r < minReqs {
-			minReqs = r
+	var tied []*Backend
+	for _, b := range backends {
+		if b.IsHealthy() && b.ActiveRequestCount() == minReqs {
+			tied = append(tied, b)
 		}
 	}
-
-	var best []*Backend
-	for _, b := range healthy {
-		if b.ActiveRequestCount() == minReqs {
-			best = append(best, b)
-		}
-	}
-
-	return best[rand.IntN(len(best))], nil
+	return tied[rand.IntN(len(tied))], nil
 }
 
 // SelectBackend picks the healthiest, least-loaded backend for the given model.
@@ -304,32 +303,33 @@ func (p *Pool) SelectBackend(model string) (*Backend, error) {
 		return nil, ErrUnknownModel
 	}
 
-	// Filter to healthy backends.
-	var healthy []*Backend
-	for _, b := range candidates {
-		if b.IsHealthy() {
-			healthy = append(healthy, b)
+	if len(candidates) == 1 {
+		if candidates[0].IsHealthy() {
+			return candidates[0], nil
 		}
-	}
-	if len(healthy) == 0 {
 		return nil, ErrBackendUnavailable
 	}
 
-	// Least-connections: find the minimum activeReqs.
-	minReqs := healthy[0].ActiveRequestCount()
-	for _, b := range healthy[1:] {
+	var best *Backend
+	minReqs := int32(1<<31 - 1)
+	for _, b := range candidates {
+		if !b.IsHealthy() {
+			continue
+		}
 		if r := b.ActiveRequestCount(); r < minReqs {
 			minReqs = r
+			best = b
 		}
 	}
-
-	// Collect all backends at minimum and pick randomly.
-	var best []*Backend
-	for _, b := range healthy {
-		if b.ActiveRequestCount() == minReqs {
-			best = append(best, b)
-		}
+	if best == nil {
+		return nil, ErrBackendUnavailable
 	}
 
-	return best[rand.IntN(len(best))], nil
+	var tied []*Backend
+	for _, b := range candidates {
+		if b.IsHealthy() && b.ActiveRequestCount() == minReqs {
+			tied = append(tied, b)
+		}
+	}
+	return tied[rand.IntN(len(tied))], nil
 }

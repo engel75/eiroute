@@ -62,10 +62,12 @@ func main() {
 
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 15 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          256,
 		MaxIdleConnsPerHost:   64,
+		WriteBufferSize:       32 << 10, // 32KB per-connection write buffer
+		ReadBufferSize:        32 << 10, // 32KB per-connection read buffer
 		IdleConnTimeout:       cfg.IdleConnTimeout.Duration,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -132,7 +134,7 @@ func main() {
 
 	healthCtx, healthCancel := context.WithCancel(context.Background())
 	defer healthCancel()
-	backends.StartHealthChecks(healthCtx, pool.Backends(), logger)
+	backends.StartHealthChecks(healthCtx, pool.Backends(), transport, logger)
 
 	reload := func() {
 		logger.Debug("reload: reading config", "path", *configPath)
