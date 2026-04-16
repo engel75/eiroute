@@ -15,9 +15,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/engel75/eiroute/internal/backends"
@@ -49,19 +49,12 @@ func New(pool *backends.Pool, errTpl *errtpl.Templates, transport http.RoundTrip
 	}
 }
 
-var requestIDCounter atomic.Uint64
-
-func newRequestID() string {
-	n := requestIDCounter.Add(1)
-	return fmt.Sprintf("%016x", n)
-}
-
 // RequestIDMiddleware injects or propagates X-Request-ID.
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
 		if id == "" {
-			id = newRequestID()
+			id = uuid.New().String()
 		}
 		ctx := context.WithValue(r.Context(), reqIDKey, id)
 		r = r.WithContext(ctx)
