@@ -70,10 +70,93 @@ func RequestIDFromContext(ctx context.Context) string {
 	return id
 }
 
-// completionRequest is the minimal struct we unmarshal from the request body.
-type completionRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+// skipValue skips over a single JSON value (object, array, or scalar)
+// using the decoder's token stream. This avoids buffering the entire
+// value into memory — only the structural tokens are consumed.
+func skipValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		for dec.More() {
+			if _, err := dec.Token(); err != nil {
+				return err
+			}
+			if err := skipValue(dec); err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+	case '[':
+		for dec.More() {
+			if err := skipValue(dec); err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseRoutingFields extracts the "model" field from the beginning of a
+// JSON request body using streaming token parsing. It reads only as many
+// bytes as needed via an io.TeeReader, capturing them in the returned
+// buffer. After this call, the full body can be reconstructed with:
+//
+//	io.MultiReader(bytes.NewReader(buf.Bytes()), r.Body)
+//
+// The caller must set r.Body to this MultiReader before proxying.
+func parseRoutingFields(r io.Reader) (model string, buf *bytes.Buffer, err error) {
+	buf = new(bytes.Buffer)
+	tee := io.TeeReader(r, buf)
+	dec := json.NewDecoder(tee)
+
+	tok, err := dec.Token()
+	if err != nil {
+		return "", buf, err
+	}
+	if tok != json.Delim('{') {
+		return "", buf, fmt.Errorf("expected {, got %v", tok)
+	}
+
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return "", buf, err
+		}
+		keyStr, ok := key.(string)
+		if !ok {
+			return "", buf, fmt.Errorf("expected string key, got %v", key)
+		}
+
+		if keyStr == "model" {
+			val, err := dec.Token()
+			if err != nil {
+				return "", buf, err
+			}
+			s, ok := val.(string)
+			if !ok {
+				return "", buf, nil
+			}
+			return s, buf, nil
+		}
+
+		if err := skipValue(dec); err != nil {
+			return "", buf, err
+		}
+	}
+
+	return "", buf, nil
 }
 
 // HandleCompletion handles POST /v1/chat/completions and /v1/completions.
@@ -81,15 +164,10 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := RequestIDFromContext(r.Context())
 
-	// Read and lightly parse body.
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		rt.writeError(w, "router_internal_error", reqID, nil, nil)
-		return
-	}
+	model, buf, parseErr := parseRoutingFields(r.Body)
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), r.Body))
 
-	var cr completionRequest
-	if err := json.Unmarshal(body, &cr); err != nil {
+	if parseErr != nil {
 		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
 			"upstream_message": "invalid JSON in request body",
 		}, nil)
@@ -97,17 +175,17 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Select backend.
-	backend, err := rt.pool.SelectBackend(cr.Model)
+	backend, err := rt.pool.SelectBackend(model)
 	if err != nil {
 		switch err {
 		case backends.ErrUnknownModel:
 			rt.writeError(w, "unknown_model", reqID, map[string]string{
-				"model":            cr.Model,
+				"model":            model,
 				"available_models": strings.Join(rt.pool.AllModels(), ", "),
 			}, nil)
 		default:
 			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
-				"model": cr.Model,
+				"model": model,
 			}, nil)
 		}
 		return
@@ -115,7 +193,7 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 
 	rt.logger.Debug("backend selected",
 		"request_id", reqID,
-		"model", cr.Model,
+		"model", model,
 		"backend", backend.Name,
 		"backend_url", backend.URL.String(),
 	)
@@ -126,19 +204,19 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 		if backend.DeprecatedNoticeInterval > 0 && rand.IntN(backend.DeprecatedNoticeInterval) == 0 {
 			rt.writeError(w, "model_deprecated", reqID, map[string]string{
-				"model":     cr.Model,
+				"model":     model,
 				"successor": backend.Successor,
 			}, backend)
 			return
 		} else if backend.Static {
 			rt.writeError(w, "model_deprecated", reqID, map[string]string{
-				"model":     cr.Model,
+				"model":     model,
 				"successor": backend.Successor,
 			}, backend)
 			return
 		} else {
 			rt.writeError(w, "model_outdated", reqID, map[string]string{
-				"model":     cr.Model,
+				"model":     model,
 				"successor": backend.Successor,
 			}, backend)
 			return
@@ -149,35 +227,33 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
 	defer semCancel()
 	if err := backend.Acquire(semCtx); err != nil {
-		// Capture semaphore state immediately, before any releases
 		used, capacity := backend.SemaphoreUsage()
 		extra := map[string]string{
-			"model":              cr.Model,
+			"model":              model,
 			"semaphore_used":     strconv.Itoa(used),
 			"semaphore_capacity": strconv.Itoa(capacity),
 		}
 		w.Header().Set("Retry-After", "5")
 		rt.writeError(w, "rate_limited", reqID, extra, backend)
-		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, cr.Model).Inc()
+		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, model).Inc()
 		return
 	}
 	defer backend.Release()
 
-	// Build reverse proxy.
+	// Build reverse proxy. Body is already set on r as a streaming
+	// MultiReader — no need to replace req.Body in the Director.
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = backend.URL.Scheme
 			req.URL.Host = backend.URL.Host
 			req.Host = backend.URL.Host
-			req.Body = io.NopCloser(bytes.NewReader(body))
-			req.ContentLength = int64(len(body))
 			req.Header.Set("X-Request-ID", reqID)
 		},
 		Transport:    rt.transport,
-		ErrorHandler: rt.makeErrorHandler(backend, reqID, cr.Model),
+		ErrorHandler: rt.makeErrorHandler(backend, reqID, model),
 		ModifyResponse: func(resp *http.Response) error {
 			if resp.StatusCode >= 400 {
-				return rt.handleUpstreamError(resp, backend, reqID, cr.Model)
+				return rt.handleUpstreamError(resp, backend, reqID, model)
 			}
 			return nil
 		},
@@ -187,27 +263,27 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		ResponseWriter: w,
 		reqID:          reqID,
 		backend:        backend.Name,
-		model:          cr.Model,
+		model:          model,
 		logger:         rt.logger,
 	}
 	proxy.ServeHTTP(tw, r)
 
 	// Record metrics.
 	duration := time.Since(start).Seconds()
-	status := rt.resolveStatus(tw, cr.Stream)
-	metrics.RequestsTotal.WithLabelValues(backend.Name, cr.Model, status).Inc()
-	metrics.RequestDuration.WithLabelValues(backend.Name, cr.Model).Observe(duration)
+	status := rt.resolveStatus(tw)
+	metrics.RequestsTotal.WithLabelValues(backend.Name, model, status).Inc()
+	metrics.RequestDuration.WithLabelValues(backend.Name, model).Observe(duration)
 
 	rt.logger.Info("request completed",
 		"request_id", reqID,
 		"backend", backend.Name,
-		"model", cr.Model,
+		"model", model,
 		"status", status,
 		"duration_ms", int64(duration*1000),
 	)
 }
 
-func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *backends.Backend, body []byte, reqID string, model string, start time.Time) {
+func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *backends.Backend, reqID string, model string, start time.Time) {
 	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
 	defer semCancel()
 	if err := backend.Acquire(semCtx); err != nil {
@@ -229,10 +305,6 @@ func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *
 			req.URL.Scheme = backend.URL.Scheme
 			req.URL.Host = backend.URL.Host
 			req.Host = backend.URL.Host
-			if body != nil {
-				req.Body = io.NopCloser(bytes.NewReader(body))
-				req.ContentLength = int64(len(body))
-			}
 			req.Header.Set("X-Request-ID", reqID)
 		},
 		Transport:    rt.transport,
@@ -249,7 +321,7 @@ func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *
 	proxy.ServeHTTP(tw, r)
 
 	duration := time.Since(start).Seconds()
-	status := rt.resolveStatus(tw, false)
+	status := rt.resolveStatus(tw)
 	metrics.RequestsTotal.WithLabelValues(backend.Name, model, status).Inc()
 	metrics.RequestDuration.WithLabelValues(backend.Name, model).Observe(duration)
 
@@ -263,7 +335,21 @@ func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *
 }
 
 func (rt *Router) proxyWebSocket(w http.ResponseWriter, r *http.Request, backend *backends.Backend, reqID string) {
+	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
+	defer semCancel()
+	if err := backend.Acquire(semCtx); err != nil {
+		w.Header().Set("Retry-After", "5")
+		rt.writeError(w, "rate_limited", reqID, map[string]string{
+			"semaphore_used":     fmt.Sprintf("%d", backend.ActiveRequestCount()),
+			"semaphore_capacity": fmt.Sprintf("%d", backend.MaxConcurrent),
+		}, backend)
+		return
+	}
+	defer backend.Release()
+
 	upgrader := websocket.Upgrader{
+		ReadBufferSize:  16384,
+		WriteBufferSize: 16384,
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
@@ -281,12 +367,18 @@ func (rt *Router) proxyWebSocket(w http.ResponseWriter, r *http.Request, backend
 	defer connBackend.Close()
 
 	backendURL := *backend.URL
-	backendURL.Scheme = "ws"
 	if backendURL.Scheme == "https" {
 		backendURL.Scheme = "wss"
+	} else {
+		backendURL.Scheme = "ws"
 	}
 
-	connUpstream, _, err := websocket.DefaultDialer.Dial(backendURL.String()+r.URL.Path, r.Header)
+	dialer := websocket.Dialer{
+		ReadBufferSize:   16384,
+		WriteBufferSize:  16384,
+		HandshakeTimeout: 10 * time.Second,
+	}
+	connUpstream, _, err := dialer.Dial(backendURL.String()+r.URL.Path, r.Header)
 	if err != nil {
 		rt.logger.Error("websocket dial to backend failed",
 			"request_id", reqID,
@@ -297,34 +389,40 @@ func (rt *Router) proxyWebSocket(w http.ResponseWriter, r *http.Request, backend
 	}
 	defer connUpstream.Close()
 
-	done := make(chan struct{})
+	ctx := r.Context()
+	done := make(chan struct{}, 1)
+	relayDeadline := 30 * time.Second
 
 	go func() {
 		for {
+			connBackend.SetReadDeadline(time.Now().Add(relayDeadline))
 			_, msg, err := connBackend.ReadMessage()
 			if err != nil {
-				close(done)
+				done <- struct{}{}
 				return
 			}
 			if err := connUpstream.WriteMessage(websocket.TextMessage, msg); err != nil {
-				close(done)
+				done <- struct{}{}
 				return
 			}
 		}
 	}()
 
 	for {
+		connUpstream.SetReadDeadline(time.Now().Add(relayDeadline))
+		_, msg, err := connUpstream.ReadMessage()
+		if err != nil {
+			return
+		}
+		if err := connBackend.WriteMessage(websocket.TextMessage, msg); err != nil {
+			return
+		}
 		select {
+		case <-ctx.Done():
+			return
 		case <-done:
 			return
 		default:
-			_, msg, err := connUpstream.ReadMessage()
-			if err != nil {
-				return
-			}
-			if err := connBackend.WriteMessage(websocket.TextMessage, msg); err != nil {
-				return
-			}
 		}
 	}
 }
@@ -383,6 +481,8 @@ func (rt *Router) makeErrorHandler(backend *backends.Backend, reqID, model strin
 }
 
 // handleUpstreamError replaces the response body with our error template.
+// Upstream error responses are typically small (<1KB), so io.ReadAll is
+// acceptable here — the memory concern is on the request path, not responses.
 func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Backend, reqID, model string) error {
 	// Read and try to parse the upstream error message.
 	upstreamBody, _ := io.ReadAll(resp.Body)
@@ -466,11 +566,11 @@ func (rt *Router) writeError(w http.ResponseWriter, key, reqID string, extra map
 	errtpl.WriteError(w, status, oaiErr)
 }
 
-func (rt *Router) resolveStatus(tw *trackingWriter, isStream bool) string {
+func (rt *Router) resolveStatus(tw *trackingWriter) string {
 	if tw.statusCode == 0 {
 		return "200"
 	}
-	if isStream && tw.statusCode == 200 {
+	if tw.isStream && tw.statusCode == 200 {
 		if tw.wroteBody {
 			return "stream_ok"
 		}
@@ -632,37 +732,33 @@ func (rt *Router) HandleCountTokens(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := RequestIDFromContext(r.Context())
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		rt.writeError(w, "router_internal_error", reqID, nil, nil)
-		return
-	}
+	model, buf, parseErr := parseRoutingFields(r.Body)
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), r.Body))
 
-	var cr completionRequest
-	if err := json.Unmarshal(body, &cr); err != nil {
+	if parseErr != nil {
 		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
 			"upstream_message": "invalid JSON in request body",
 		}, nil)
 		return
 	}
 
-	backend, err := rt.pool.SelectBackend(cr.Model)
+	backend, err := rt.pool.SelectBackend(model)
 	if err != nil {
 		switch err {
 		case backends.ErrUnknownModel:
 			rt.writeError(w, "unknown_model", reqID, map[string]string{
-				"model":            cr.Model,
+				"model":            model,
 				"available_models": strings.Join(rt.pool.AllModels(), ", "),
 			}, nil)
 		default:
 			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
-				"model": cr.Model,
+				"model": model,
 			}, nil)
 		}
 		return
 	}
 
-	rt.proxyRequest(w, r, backend, body, reqID, cr.Model, start)
+	rt.proxyRequest(w, r, backend, reqID, model, start)
 }
 
 // HandleResponsesRetrieve handles GET /v1/responses/{id}.
@@ -676,7 +772,7 @@ func (rt *Router) HandleResponsesRetrieve(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	rt.proxyRequest(w, r, backend, nil, reqID, "", start)
+	rt.proxyRequest(w, r, backend, reqID, "", start)
 }
 
 // HandleResponsesCancel handles POST /v1/responses/{id}/cancel.
@@ -684,21 +780,14 @@ func (rt *Router) HandleResponsesCancel(w http.ResponseWriter, r *http.Request) 
 	start := time.Now()
 	reqID := RequestIDFromContext(r.Context())
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		rt.writeError(w, "router_internal_error", reqID, nil, nil)
-		return
-	}
-
-	var cr completionRequest
-	json.Unmarshal(body, &cr)
+	model, buf, _ := parseRoutingFields(r.Body)
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf.Bytes()), r.Body))
 
 	var backend *backends.Backend
-	var model string
+	var err error
 
-	if cr.Model != "" {
-		backend, err = rt.pool.SelectBackend(cr.Model)
-		model = cr.Model
+	if model != "" {
+		backend, err = rt.pool.SelectBackend(model)
 	} else {
 		backend, err = rt.pool.SelectAnyBackend()
 	}
@@ -706,7 +795,7 @@ func (rt *Router) HandleResponsesCancel(w http.ResponseWriter, r *http.Request) 
 		switch err {
 		case backends.ErrUnknownModel:
 			rt.writeError(w, "unknown_model", reqID, map[string]string{
-				"model":            cr.Model,
+				"model":            model,
 				"available_models": strings.Join(rt.pool.AllModels(), ", "),
 			}, nil)
 		default:
@@ -715,7 +804,7 @@ func (rt *Router) HandleResponsesCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	rt.proxyRequest(w, r, backend, body, reqID, model, start)
+	rt.proxyRequest(w, r, backend, reqID, model, start)
 }
 
 // HandleRealtime handles WS /v1/realtime.
