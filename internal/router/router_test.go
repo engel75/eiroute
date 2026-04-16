@@ -614,6 +614,48 @@ func TestProxy_RerankRoute(t *testing.T) {
 	}
 }
 
+func TestProxy_RerankRouteV1(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"rerank-1","results":[{"index":0,"relevance_score":0.9}]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","query":"q","documents":["d1"]}`
+	r := httptest.NewRequest(http.MethodPost, "/rerank", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_RerankRouteV2(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"rerank-1","results":[{"index":0,"relevance_score":0.9}]}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","query":"q","documents":["d1"]}`
+	r := httptest.NewRequest(http.MethodPost, "/v2/rerank", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
 func TestProxy_MessagesRoute(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -670,6 +712,65 @@ func TestProxy_ApiGenerateRoute(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/api/generate", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_CountTokensRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"input_tokens":12,"context_management":{"original_input_tokens":12}}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	body := `{"model":"test-model","messages":[{"role":"user","content":"Hello, world!"}]}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCountTokens))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_ResponsesRetrieveRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"resp_123","model":"test-model","status":"completed"}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/v1/responses/resp_123", nil)
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleResponsesRetrieve))
+	handler.ServeHTTP(w, r)
+
+	if w.Code != 200 {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestProxy_ResponsesCancelRoute(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"resp_123","status":"cancelled"}`))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses/resp_123/cancel", nil)
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleResponsesCancel))
 	handler.ServeHTTP(w, r)
 
 	if w.Code != 200 {
