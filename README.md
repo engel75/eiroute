@@ -18,6 +18,12 @@ make run          # build and run with config.example.yaml
 ./eiroute -config config.yaml
 ```
 
+Show version:
+
+```bash
+./eiroute version
+```
+
 ## Configuration
 
 See [config.example.yaml](config.example.yaml) for a full example.
@@ -108,7 +114,24 @@ See [errors.example.json](errors.example.json). Placeholders: `{model}`, `{backe
 |----------|-------------|
 | `POST /v1/chat/completions` | Proxied to backend based on `model` field |
 | `POST /v1/completions` | Same as above (legacy completions) |
+| `POST /v1/responses` | OpenAI Responses API |
+| `GET /v1/responses/{id}` | Retrieve a response by ID |
+| `POST /v1/responses/{id}/cancel` | Cancel a response by ID |
+| `POST /v1/embeddings` | Proxied to backend based on `model` field |
+| `POST /v1/classify` | Proxied to backend based on `model` field |
+| `POST /v1/tokenize` | Proxied to backend based on `model` field |
+| `POST /v1/detokenize` | Proxied to backend based on `model` field |
+| `POST /v1/audio/transcriptions` | Proxied to backend based on `model` field |
+| `POST /v1/score` | Proxied to backend based on `model` field |
+| `POST /v1/rerank` | Rerank (v1) — proxied to backend |
+| `POST /rerank` | Rerank (root) — proxied to backend |
+| `POST /v2/rerank` | Rerank (v2) — proxied to backend |
+| `POST /v1/messages` | Anthropic Messages API — proxied to backend |
+| `POST /v1/messages/count_tokens` | Anthropic token counting — proxied to backend |
+| `POST /api/chat` | Ollama Chat API — proxied to backend |
+| `POST /api/generate` | Ollama Generate API — proxied to backend |
 | `GET /v1/models` | Aggregated model list from healthy backends |
+| `GET /v1/realtime` | WebSocket proxy for OpenAI Realtime API |
 | `GET /health` | Backend health summary (503 if all backends down) |
 | `GET /metrics` | Prometheus metrics |
 
@@ -145,6 +168,21 @@ Alternatively, send `SIGHUP`:
 kill -HUP $(pidof eiroute)
 ```
 
+## Performance
+
+The upstream HTTP transport is tuned for low-latency proxying:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `MaxIdleConns` | 256 | Total idle connections across all backends |
+| `MaxIdleConnsPerHost` | 64 | Idle connections per backend |
+| `WriteBufferSize` | 32KB | Per-connection write buffer |
+| `ReadBufferSize` | 32KB | Per-connection read buffer |
+| `KeepAlive` | 15s | TCP keepalive interval |
+| `ResponseHeaderTimeout` | 60s | Time to wait for backend response headers |
+
+Request body parsing uses streaming JSON token decoding (`parseRoutingFields`) — only the `model` field is read to route the request, the rest of the body streams through to the backend without buffering the entire payload into memory.
+
 ## Streaming gotchas
 
 - The router passes SSE streams through without buffering. `httputil.ReverseProxy` auto-detects `text/event-stream` and flushes each write.
@@ -152,6 +190,16 @@ kill -HUP $(pidof eiroute)
 - Do not place gzip middleware or response caching in front of streaming endpoints.
 - If running behind Traefik, ensure the route does not buffer responses (Traefik does not buffer SSE by default).
 - Client disconnects are propagated to the upstream via `context.Cancel` and free the semaphore slot.
+
+## WebSocket Proxy
+
+The `GET /v1/realtime` endpoint proxies WebSocket connections to the backend:
+
+- The client connection is upgraded to WebSocket and relayed to `ws://` (or `wss://` for HTTPS backends) at the backend URL.
+- Semaphore-based concurrency limits apply to WebSocket connections, same as HTTP requests.
+- Read/write buffers are set to 16KB per direction for efficient relay.
+- A 30-second relay deadline is enforced on each direction; idle connections time out automatically.
+- Client disconnects are propagated to the upstream connection.
 
 ## Debug Logging
 
