@@ -374,9 +374,10 @@ func (rt *Router) proxyWebSocket(w http.ResponseWriter, r *http.Request, backend
 	defer connBackend.Close()
 
 	backendURL := *backend.URL
-	backendURL.Scheme = "ws"
 	if backendURL.Scheme == "https" {
 		backendURL.Scheme = "wss"
+	} else {
+		backendURL.Scheme = "ws"
 	}
 
 	dialer := websocket.Dialer{
