@@ -90,7 +90,7 @@ func main() {
 	mux.Handle("POST /v1/classify", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/tokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/detokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
-	mux.Handle("POST /v1/audio/transcriptions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	mux.Handle("POST /v1/audio/transcriptions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleAudioTranscription)))
 	mux.Handle("POST /v1/score", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/rerank", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /rerank", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))

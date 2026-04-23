@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -659,14 +660,22 @@ func TestProxy_AudioTranscriptionsRoute(t *testing.T) {
 	rt := setupRouter(t, upstream.URL)
 
 	w := httptest.NewRecorder()
-	body := `{"model":"test-model"}`
-	r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(body))
-	r.Header.Set("Content-Type", "application/json")
-	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	go func() {
+		writer.WriteField("model", "test-model")
+		fw, _ := writer.CreateFormFile("file", "test.mp3")
+		fw.Write([]byte("fake audio data"))
+		writer.Close()
+		pw.Close()
+	}()
+	r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", pr)
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleAudioTranscription))
 	handler.ServeHTTP(w, r)
 
 	if w.Code != 200 {
-		t.Errorf("status = %d, want 200", w.Code)
+		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 }
 

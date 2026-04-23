@@ -283,6 +283,108 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (rt *Router) HandleAudioTranscription(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	reqID := RequestIDFromContext(r.Context())
+
+	bodyBuf := new(bytes.Buffer)
+	io.TeeReader(r.Body, bodyBuf)
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBuf.Bytes()), r.Body))
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "invalid multipart form data: " + err.Error(),
+		}, nil)
+		return
+	}
+
+	model := r.FormValue("model")
+	if model == "" {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "missing required field 'model'",
+		}, nil)
+		return
+	}
+
+	backend, err := rt.pool.SelectBackend(model)
+	if err != nil {
+		switch err {
+		case backends.ErrUnknownModel:
+			rt.writeError(w, "unknown_model", reqID, map[string]string{
+				"model":            model,
+				"available_models": strings.Join(rt.pool.AllModels(), ", "),
+			}, nil)
+		default:
+			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
+				"model": model,
+			}, nil)
+		}
+		return
+	}
+
+	rt.logger.Debug("backend selected",
+		"request_id", reqID,
+		"model", model,
+		"backend", backend.Name,
+		"backend_url", backend.URL.String(),
+	)
+
+	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
+	defer semCancel()
+	if err := backend.Acquire(semCtx); err != nil {
+		used, capacity := backend.SemaphoreUsage()
+		extra := map[string]string{
+			"model":              model,
+			"semaphore_used":     strconv.Itoa(used),
+			"semaphore_capacity": strconv.Itoa(capacity),
+		}
+		w.Header().Set("Retry-After", "5")
+		rt.writeError(w, "rate_limited", reqID, extra, backend)
+		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, model).Inc()
+		return
+	}
+	defer backend.Release()
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = backend.URL.Scheme
+			req.URL.Host = backend.URL.Host
+			req.Host = backend.URL.Host
+			req.Header.Set("X-Request-ID", reqID)
+		},
+		Transport:    rt.transport,
+		ErrorHandler: rt.makeErrorHandler(backend, reqID, model),
+		ModifyResponse: func(resp *http.Response) error {
+			if resp.StatusCode >= 400 {
+				return rt.handleUpstreamError(resp, backend, reqID, model)
+			}
+			return nil
+		},
+	}
+
+	tw := &trackingWriter{
+		ResponseWriter: w,
+		reqID:          reqID,
+		backend:        backend.Name,
+		model:          model,
+		logger:         rt.logger,
+	}
+	proxy.ServeHTTP(tw, r)
+
+	duration := time.Since(start).Seconds()
+	status := rt.resolveStatus(tw)
+	metrics.RequestsTotal.WithLabelValues(backend.Name, model, status).Inc()
+	metrics.RequestDuration.WithLabelValues(backend.Name, model).Observe(duration)
+
+	rt.logger.Info("request completed",
+		"request_id", reqID,
+		"backend", backend.Name,
+		"model", model,
+		"status", status,
+		"duration_ms", int64(duration*1000),
+	)
+}
+
 func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *backends.Backend, reqID string, model string, start time.Time) {
 	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
 	defer semCancel()
