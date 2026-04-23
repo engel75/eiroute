@@ -516,6 +516,8 @@ func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Bac
 	resp.ContentLength = int64(len(rendered))
 	resp.StatusCode = status
 	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rendered)))
+	resp.Header.Del("Content-Encoding")
 
 	return nil
 }

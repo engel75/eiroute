@@ -233,6 +233,53 @@ func jsonString(s string) string {
 	return string(b)
 }
 
+// Regression test: handleUpstreamError rewrote resp.Body but left the upstream's
+// Content-Length header in place. When the rewritten envelope was longer than
+// the upstream body, net/http rejected the response with
+// "http: wrote more than the declared Content-Length" and the client got an
+// empty reply. Drive a real HTTP server to exercise the Content-Length check
+// (ResponseRecorder does not enforce it).
+func TestProxy_UpstreamError_ContentLengthRewritten(t *testing.T) {
+	shortBody := []byte(`{"object":"error","message":"x","type":"BadRequestError","code":400}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "68")
+		w.Header().Set("Content-Encoding", "identity")
+		w.WriteHeader(400)
+		w.Write(shortBody)
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+	eirouteSrv := httptest.NewServer(RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	defer eirouteSrv.Close()
+
+	resp, err := http.Post(eirouteSrv.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"test-model","stream":false}`))
+	if err != nil {
+		t.Fatalf("client request failed (empty reply?): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
+		t.Errorf("Content-Encoding leaked from upstream: %q", ce)
+	}
+	var oaiErr errtpl.OpenAIError
+	if err := json.Unmarshal(body, &oaiErr); err != nil {
+		t.Fatalf("body is not a valid OpenAI error envelope: %v\nbody: %s", err, body)
+	}
+	if oaiErr.Error.Type == "" {
+		t.Errorf("empty error envelope: %+v", oaiErr)
+	}
+}
+
 func TestProxy_BackendHTTP429(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
