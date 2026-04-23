@@ -177,9 +177,60 @@ func TestProxy_BackendHTTP500(t *testing.T) {
 	rt := setupRouter(t, upstream.URL)
 	w := doRequest(t, rt, `{"model":"test-model","stream":false}`)
 
-	if w.Code != 502 {
-		t.Errorf("status = %d, want 502", w.Code)
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500 (passthrough)", w.Code)
 	}
+	var oaiErr errtpl.OpenAIError
+	json.Unmarshal(w.Body.Bytes(), &oaiErr)
+	if oaiErr.Error.Type != "api_error" {
+		t.Errorf("type = %q, want %q", oaiErr.Error.Type, "api_error")
+	}
+	if oaiErr.Error.Code != "upstream_internal_error" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "upstream_internal_error")
+	}
+}
+
+// sglang's chat/completions endpoint sends a flat error envelope
+// ({"object":"error","message":...,"type":"BadRequestError","code":400}).
+// eiroute must extract the message, rewrap it in the nested OpenAI envelope,
+// classify context-length errors, and pass the upstream status through.
+func TestProxy_SGLang_ContextLengthExceeded(t *testing.T) {
+	sglangMsg := "Requested token count exceeds the model's maximum context length of 196608 tokens. You requested a total of 222039 tokens: 190039 tokens from the input messages and 32000 tokens for the completion. Please reduce the number of tokens in the input messages or the completion to fit within the limit."
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		body := `{"object":"error","message":` + jsonString(sglangMsg) + `,"type":"BadRequestError","param":null,"code":400}`
+		w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+	w := doRequest(t, rt, `{"model":"test-model","stream":false}`)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 (passthrough)", w.Code)
+	}
+	var oaiErr errtpl.OpenAIError
+	if err := json.Unmarshal(w.Body.Bytes(), &oaiErr); err != nil {
+		t.Fatalf("response is not valid OpenAI error envelope: %v\nbody: %s", err, w.Body.String())
+	}
+	if oaiErr.Error.Type != "invalid_request_error" {
+		t.Errorf("type = %q, want %q", oaiErr.Error.Type, "invalid_request_error")
+	}
+	if oaiErr.Error.Code != "context_length_exceeded" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "context_length_exceeded")
+	}
+	if oaiErr.Error.Param == nil || *oaiErr.Error.Param != "messages" {
+		t.Errorf("param = %v, want \"messages\"", oaiErr.Error.Param)
+	}
+	if oaiErr.Error.Message != sglangMsg {
+		t.Errorf("message not forwarded verbatim.\ngot:  %s\nwant: %s", oaiErr.Error.Message, sglangMsg)
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func TestProxy_BackendHTTP429(t *testing.T) {

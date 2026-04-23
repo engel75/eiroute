@@ -85,7 +85,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/completions", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
-	mux.Handle("POST /v1/responses", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	mux.Handle("POST /v1/responses", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleResponses)))
 	mux.Handle("POST /v1/embeddings", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/classify", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
 	mux.Handle("POST /v1/tokenize", router.RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
