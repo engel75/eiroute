@@ -289,22 +289,29 @@ func (rt *Router) HandleAudioTranscription(w http.ResponseWriter, r *http.Reques
 
 	bodyBuf := new(bytes.Buffer)
 	io.Copy(bodyBuf, r.Body)
-	r.Body = io.NopCloser(bytes.NewReader(bodyBuf.Bytes()))
 
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	tmpReq := &http.Request{
+		Method:        r.Method,
+		URL:           r.URL,
+		Header:        r.Header,
+		Body:          io.NopCloser(bytes.NewReader(bodyBuf.Bytes())),
+		ContentLength: int64(bodyBuf.Len()),
+	}
+	if err := tmpReq.ParseMultipartForm(32 << 20); err != nil {
 		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
 			"upstream_message": "invalid multipart form data: " + err.Error(),
 		}, nil)
 		return
 	}
-
-	model := r.FormValue("model")
+	model := tmpReq.FormValue("model")
 	if model == "" {
 		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
 			"upstream_message": "missing required field 'model'",
 		}, nil)
 		return
 	}
+
+	r.Body = io.NopCloser(bytes.NewReader(bodyBuf.Bytes()))
 
 	backend, err := rt.pool.SelectBackend(model)
 	if err != nil {
