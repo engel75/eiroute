@@ -283,6 +283,115 @@ func (rt *Router) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (rt *Router) HandleAudioTranscription(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	reqID := RequestIDFromContext(r.Context())
+
+	bodyBuf := new(bytes.Buffer)
+	io.Copy(bodyBuf, r.Body)
+
+	tmpReq := &http.Request{
+		Method:        r.Method,
+		URL:           r.URL,
+		Header:        r.Header,
+		Body:          io.NopCloser(bytes.NewReader(bodyBuf.Bytes())),
+		ContentLength: int64(bodyBuf.Len()),
+	}
+	if err := tmpReq.ParseMultipartForm(32 << 20); err != nil {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "invalid multipart form data: " + err.Error(),
+		}, nil)
+		return
+	}
+	model := tmpReq.FormValue("model")
+	if model == "" {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "missing required field 'model'",
+		}, nil)
+		return
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(bodyBuf.Bytes()))
+
+	backend, err := rt.pool.SelectBackend(model)
+	if err != nil {
+		switch err {
+		case backends.ErrUnknownModel:
+			rt.writeError(w, "unknown_model", reqID, map[string]string{
+				"model":            model,
+				"available_models": strings.Join(rt.pool.AllModels(), ", "),
+			}, nil)
+		default:
+			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
+				"model": model,
+			}, nil)
+		}
+		return
+	}
+
+	rt.logger.Debug("backend selected",
+		"request_id", reqID,
+		"model", model,
+		"backend", backend.Name,
+		"backend_url", backend.URL.String(),
+	)
+
+	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
+	defer semCancel()
+	if err := backend.Acquire(semCtx); err != nil {
+		used, capacity := backend.SemaphoreUsage()
+		extra := map[string]string{
+			"model":              model,
+			"semaphore_used":     strconv.Itoa(used),
+			"semaphore_capacity": strconv.Itoa(capacity),
+		}
+		w.Header().Set("Retry-After", "5")
+		rt.writeError(w, "rate_limited", reqID, extra, backend)
+		metrics.BackendOverloadedTotal.WithLabelValues(backend.Name, model).Inc()
+		return
+	}
+	defer backend.Release()
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = backend.URL.Scheme
+			req.URL.Host = backend.URL.Host
+			req.Host = backend.URL.Host
+			req.Header.Set("X-Request-ID", reqID)
+		},
+		Transport:    rt.transport,
+		ErrorHandler: rt.makeErrorHandler(backend, reqID, model),
+		ModifyResponse: func(resp *http.Response) error {
+			if resp.StatusCode >= 400 {
+				return rt.handleUpstreamError(resp, backend, reqID, model)
+			}
+			return nil
+		},
+	}
+
+	tw := &trackingWriter{
+		ResponseWriter: w,
+		reqID:          reqID,
+		backend:        backend.Name,
+		model:          model,
+		logger:         rt.logger,
+	}
+	proxy.ServeHTTP(tw, r)
+
+	duration := time.Since(start).Seconds()
+	status := rt.resolveStatus(tw)
+	metrics.RequestsTotal.WithLabelValues(backend.Name, model, status).Inc()
+	metrics.RequestDuration.WithLabelValues(backend.Name, model).Observe(duration)
+
+	rt.logger.Info("request completed",
+		"request_id", reqID,
+		"backend", backend.Name,
+		"model", model,
+		"status", status,
+		"duration_ms", int64(duration*1000),
+	)
+}
+
 func (rt *Router) proxyRequest(w http.ResponseWriter, r *http.Request, backend *backends.Backend, reqID string, model string, start time.Time) {
 	semCtx, semCancel := context.WithTimeout(r.Context(), rt.semTimeout)
 	defer semCancel()
@@ -480,25 +589,18 @@ func (rt *Router) makeErrorHandler(backend *backends.Backend, reqID, model strin
 	}
 }
 
-// handleUpstreamError replaces the response body with our error template.
+// handleUpstreamError rewraps an upstream 4xx/5xx response in the OpenAI
+// error envelope. The upstream message is forwarded verbatim and the
+// upstream HTTP status is preserved. type/code/param are classified from
+// the message (e.g. context_length_exceeded) with a status-based fallback.
 // Upstream error responses are typically small (<1KB), so io.ReadAll is
-// acceptable here — the memory concern is on the request path, not responses.
+// acceptable here — the memory concern is on the request path.
 func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Backend, reqID, model string) error {
-	// Read and try to parse the upstream error message.
 	upstreamBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	var upstreamMsg string
-	var upstreamErr struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(upstreamBody, &upstreamErr) == nil {
-		upstreamMsg = upstreamErr.Error.Message
-	}
+	oaiErr, status := errtpl.BuildUpstreamError(resp.StatusCode, upstreamBody, reqID)
 
-	key := errtpl.ClassifyHTTPStatus(resp.StatusCode)
 	logLevel := slog.LevelWarn
 	if resp.StatusCode >= 500 {
 		logLevel = slog.LevelError
@@ -508,8 +610,9 @@ func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Bac
 		"backend", backend.Name,
 		"model", model,
 		"upstream_status", resp.StatusCode,
-		"error_key", key,
-		"upstream_message", upstreamMsg,
+		"oai_type", oaiErr.Error.Type,
+		"oai_code", oaiErr.Error.Code,
+		"upstream_message", oaiErr.Error.Message,
 	)
 
 	if resp.StatusCode == 429 {
@@ -517,18 +620,13 @@ func (rt *Router) handleUpstreamError(resp *http.Response, backend *backends.Bac
 	}
 	metrics.UpstreamErrorsTotal.WithLabelValues(backend.Name, model, strconv.Itoa(resp.StatusCode)).Inc()
 
-	oaiErr, status := rt.errors.Render(key, map[string]string{
-		"request_id":       reqID,
-		"model":            model,
-		"backend":          backend.Name,
-		"upstream_message": upstreamMsg,
-	})
-
 	rendered, _ := json.Marshal(oaiErr)
 	resp.Body = io.NopCloser(bytes.NewReader(rendered))
 	resp.ContentLength = int64(len(rendered))
 	resp.StatusCode = status
 	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rendered)))
+	resp.Header.Del("Content-Encoding")
 
 	return nil
 }
@@ -725,6 +823,60 @@ func (rt *Router) logDebugStatus() {
 		"memory_rss_mb", memoryRSSMB,
 		"load_avg", loadAvg,
 	)
+}
+
+// HandleResponses handles POST /v1/responses. When stream=true, the request
+// is translated to /v1/chat/completions + stream=true and the upstream SSE
+// is translated back to Responses-API SSE. sglang's native /v1/responses
+// streaming path only works for Harmony (gpt-oss) models; this translator
+// makes streaming work for any model. When stream=false, we fall through
+// to the generic proxy, which handles sglang's native non-streaming path.
+func (rt *Router) HandleResponses(w http.ResponseWriter, r *http.Request) {
+	reqID := RequestIDFromContext(r.Context())
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "could not read request body",
+		}, nil)
+		return
+	}
+
+	var peek struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil {
+		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
+			"upstream_message": "invalid JSON in request body",
+		}, nil)
+		return
+	}
+
+	if !peek.Stream {
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		rt.HandleCompletion(w, r)
+		return
+	}
+
+	backend, err := rt.pool.SelectBackend(peek.Model)
+	if err != nil {
+		switch err {
+		case backends.ErrUnknownModel:
+			rt.writeError(w, "unknown_model", reqID, map[string]string{
+				"model":            peek.Model,
+				"available_models": strings.Join(rt.pool.AllModels(), ", "),
+			}, nil)
+		default:
+			rt.writeError(w, "backend_unavailable", reqID, map[string]string{
+				"model": peek.Model,
+			}, nil)
+		}
+		return
+	}
+
+	rt.handleResponsesStream(w, r, body, reqID, backend, peek.Model)
 }
 
 // HandleCountTokens handles POST /v1/messages/count_tokens.

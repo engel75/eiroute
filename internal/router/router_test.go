@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -177,8 +178,106 @@ func TestProxy_BackendHTTP500(t *testing.T) {
 	rt := setupRouter(t, upstream.URL)
 	w := doRequest(t, rt, `{"model":"test-model","stream":false}`)
 
-	if w.Code != 502 {
-		t.Errorf("status = %d, want 502", w.Code)
+	if w.Code != 500 {
+		t.Errorf("status = %d, want 500 (passthrough)", w.Code)
+	}
+	var oaiErr errtpl.OpenAIError
+	json.Unmarshal(w.Body.Bytes(), &oaiErr)
+	if oaiErr.Error.Type != "api_error" {
+		t.Errorf("type = %q, want %q", oaiErr.Error.Type, "api_error")
+	}
+	if oaiErr.Error.Code != "upstream_internal_error" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "upstream_internal_error")
+	}
+}
+
+// sglang's chat/completions endpoint sends a flat error envelope
+// ({"object":"error","message":...,"type":"BadRequestError","code":400}).
+// eiroute must extract the message, rewrap it in the nested OpenAI envelope,
+// classify context-length errors, and pass the upstream status through.
+func TestProxy_SGLang_ContextLengthExceeded(t *testing.T) {
+	sglangMsg := "Requested token count exceeds the model's maximum context length of 196608 tokens. You requested a total of 222039 tokens: 190039 tokens from the input messages and 32000 tokens for the completion. Please reduce the number of tokens in the input messages or the completion to fit within the limit."
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		body := `{"object":"error","message":` + jsonString(sglangMsg) + `,"type":"BadRequestError","param":null,"code":400}`
+		w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+	w := doRequest(t, rt, `{"model":"test-model","stream":false}`)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 (passthrough)", w.Code)
+	}
+	var oaiErr errtpl.OpenAIError
+	if err := json.Unmarshal(w.Body.Bytes(), &oaiErr); err != nil {
+		t.Fatalf("response is not valid OpenAI error envelope: %v\nbody: %s", err, w.Body.String())
+	}
+	if oaiErr.Error.Type != "invalid_request_error" {
+		t.Errorf("type = %q, want %q", oaiErr.Error.Type, "invalid_request_error")
+	}
+	if oaiErr.Error.Code != "context_length_exceeded" {
+		t.Errorf("code = %q, want %q", oaiErr.Error.Code, "context_length_exceeded")
+	}
+	if oaiErr.Error.Param == nil || *oaiErr.Error.Param != "messages" {
+		t.Errorf("param = %v, want \"messages\"", oaiErr.Error.Param)
+	}
+	if oaiErr.Error.Message != sglangMsg {
+		t.Errorf("message not forwarded verbatim.\ngot:  %s\nwant: %s", oaiErr.Error.Message, sglangMsg)
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// Regression test: handleUpstreamError rewrote resp.Body but left the upstream's
+// Content-Length header in place. When the rewritten envelope was longer than
+// the upstream body, net/http rejected the response with
+// "http: wrote more than the declared Content-Length" and the client got an
+// empty reply. Drive a real HTTP server to exercise the Content-Length check
+// (ResponseRecorder does not enforce it).
+func TestProxy_UpstreamError_ContentLengthRewritten(t *testing.T) {
+	shortBody := []byte(`{"object":"error","message":"x","type":"BadRequestError","code":400}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "68")
+		w.Header().Set("Content-Encoding", "identity")
+		w.WriteHeader(400)
+		w.Write(shortBody)
+	}))
+	defer upstream.Close()
+
+	rt := setupRouter(t, upstream.URL)
+	eirouteSrv := httptest.NewServer(RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion)))
+	defer eirouteSrv.Close()
+
+	resp, err := http.Post(eirouteSrv.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"test-model","stream":false}`))
+	if err != nil {
+		t.Fatalf("client request failed (empty reply?): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" && ce != "identity" {
+		t.Errorf("Content-Encoding leaked from upstream: %q", ce)
+	}
+	var oaiErr errtpl.OpenAIError
+	if err := json.Unmarshal(body, &oaiErr); err != nil {
+		t.Fatalf("body is not a valid OpenAI error envelope: %v\nbody: %s", err, body)
+	}
+	if oaiErr.Error.Type == "" {
+		t.Errorf("empty error envelope: %+v", oaiErr)
 	}
 }
 
@@ -561,14 +660,22 @@ func TestProxy_AudioTranscriptionsRoute(t *testing.T) {
 	rt := setupRouter(t, upstream.URL)
 
 	w := httptest.NewRecorder()
-	body := `{"model":"test-model"}`
-	r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(body))
-	r.Header.Set("Content-Type", "application/json")
-	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleCompletion))
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+	go func() {
+		writer.WriteField("model", "test-model")
+		fw, _ := writer.CreateFormFile("file", "test.mp3")
+		fw.Write([]byte("fake audio data"))
+		writer.Close()
+		pw.Close()
+	}()
+	r := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", pr)
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	handler := RequestIDMiddleware(http.HandlerFunc(rt.HandleAudioTranscription))
 	handler.ServeHTTP(w, r)
 
 	if w.Code != 200 {
-		t.Errorf("status = %d, want 200", w.Code)
+		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 }
 
