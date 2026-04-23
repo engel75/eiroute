@@ -288,8 +288,8 @@ func (rt *Router) HandleAudioTranscription(w http.ResponseWriter, r *http.Reques
 	reqID := RequestIDFromContext(r.Context())
 
 	bodyBuf := new(bytes.Buffer)
-	io.TeeReader(r.Body, bodyBuf)
-	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(bodyBuf.Bytes()), r.Body))
+	io.Copy(bodyBuf, r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(bodyBuf.Bytes()))
 
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		rt.writeError(w, "backend_bad_request", reqID, map[string]string{
